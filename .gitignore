@@ -1,0 +1,100 @@
+# Secrets and local environment files
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+.secrets/
+secrets/
+credentials.json
+service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Frontend dependencies, builds, and caches
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+node_modules/
+.vite/
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+.npm/
+.pnpm-store/
+.yarn/cache/
+
+# Python environments, builds, and caches
+backend/.venv/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+backend/build/
+backend/dist/
+
+# Test and coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit.xml
+test-results/
+
+# Application runtime data and temporary verification artifacts
+backend/.runtime/
+backend/.tmp_ocr_verify/
+backend/storage/
+/logs/
+/tmp/
+data/
+*.log
+*.pid
+*.pid.lock
+*.tmp
+*.temp
+
+# OCR and model download caches created inside the repository
+.paddlex/
+.paddleocr/
+**/.paddlex/
+**/.paddleocr/
+
+# Local databases and database dumps
+postgres_data/
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+
+# Local backups and editor recovery files
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+
+# Editors and operating systems
+.idea/
+.vscode/
+.settings/
+*.iml
+.project
+.classpath
+.DS_Store
+Thumbs.db
+Desktop.ini

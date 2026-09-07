@@ -1,0 +1,15 @@
+alembic==1.17.2
+aiofiles==25.1.0
+asyncpg==0.30.0
+fastapi==0.115.6
+httpx==0.28.1
+opencv-contrib-python==4.10.0.84
+Pillow==12.3.0
+pillow-heif==1.6.0
+paddleocr==3.7.0
+paddlepaddle==3.3.1
+pydantic-settings==2.7.1
+python-multipart==0.0.32
+reportlab==4.4.3
+SQLAlchemy[asyncio]==2.0.45
+uvicorn[standard]==0.34.0
