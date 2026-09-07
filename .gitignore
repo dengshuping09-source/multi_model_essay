@@ -59,6 +59,8 @@ backend/storage/
 /logs/
 /tmp/
 data/
+deploy/production.env
+deploy/backups/
 *.log
 *.pid
 *.pid.lock
