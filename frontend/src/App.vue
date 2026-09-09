@@ -342,6 +342,7 @@ const polishErrorMessage = ref('')
 const polishViewMode = ref<'compare' | 'polished'>('compare')
 const annotationReturnToReport = ref(false)
 let reviewPollingTimer: ReturnType<typeof setInterval> | null = null
+let selectedImageIdSequence = 0
 
 const isBusy = computed(() => isSubmitting.value || isRecognizing.value || isSavingCorrection.value || isBatchReviewing.value || isRechecking.value || isRestoringHistory.value)
 const hasEssayTaskContent = computed(() => Boolean(
@@ -473,6 +474,28 @@ const reportSuggestions = computed<ReviewSuggestion[]>(() => {
   }
   const priorityRank = { high: 0, medium: 1, low: 2 }
   return [...unique.values()].sort((left, right) => priorityRank[left.priority] - priorityRank[right.priority]).slice(0, 3)
+})
+const reportTopSummary = computed(() => {
+  const summary = reviewBatch.value?.final_evaluation?.summary?.replace(/\s+/g, ' ').trim() ?? ''
+  if (!summary) return '评测已经完成，可以先从最值得修改的一处开始。'
+  const firstSentence = summary.match(/^.{1,88}?[。！？!?](?:[”’」』])?/)?.[0]
+  if (firstSentence) return firstSentence
+  return summary.length > 88 ? `${summary.slice(0, 88).replace(/[，,；;、\s]+$/, '')}……` : summary
+})
+const reportTopStrengths = computed(() => reportStrengths.value.slice(0, 2))
+const reportTopIssues = computed(() => reportSuggestions.value.slice(0, 3))
+const reportConsistency = computed(() => {
+  const final = reviewBatch.value?.final_evaluation
+  const consistency = final?.consistency
+  if (consistency === 'high') return { label: '高', tone: 'high' }
+  if (consistency === 'medium') return { label: '一般', tone: 'medium' }
+  if (consistency === 'low') return { label: '较低', tone: 'low' }
+  if (final?.confidence !== null && final?.confidence !== undefined) {
+    if (final.confidence >= 0.8) return { label: '高', tone: 'high' }
+    if (final.confidence >= 0.55) return { label: '一般', tone: 'medium' }
+    return { label: '较低', tone: 'low' }
+  }
+  return { label: '暂未提供', tone: 'unknown' }
 })
 const polishOriginalSegments = computed<PolishTextSegment[]>(() =>
   buildPolishSegments(polishResult.value?.original_text ?? '', polishResult.value?.changes ?? [], 'original'),
@@ -1066,7 +1089,8 @@ function clearReviewResult(): void {
 }
 
 function createImageId(file: File): string {
-  return `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`
+  selectedImageIdSequence += 1
+  return `${file.name}-${file.size}-${file.lastModified}-${Date.now().toString(36)}-${selectedImageIdSequence}`
 }
 
 function isSupportedImage(file: File): boolean {
@@ -1096,11 +1120,15 @@ function addFiles(files: FileList | null): void {
       continue
     }
 
-    accepted.push({
-      id: createImageId(file),
-      file,
-      previewUrl: URL.createObjectURL(file),
-    })
+    try {
+      accepted.push({
+        id: createImageId(file),
+        file,
+        previewUrl: URL.createObjectURL(file),
+      })
+    } catch {
+      rejected.push(`${file.name} 无法读取，请重新选择`)
+    }
   }
 
   selectedImages.value.push(...accepted)
@@ -1112,8 +1140,14 @@ function addFiles(files: FileList | null): void {
 
 function handleFileSelection(event: Event): void {
   const input = event.target as HTMLInputElement
-  addFiles(input.files)
-  input.value = ''
+  try {
+    addFiles(input.files)
+  } catch {
+    errorMessage.value = '暂时无法读取所选图片，请重新选择。'
+  } finally {
+    // Clearing the native input allows the same image to be selected again.
+    input.value = ''
+  }
 }
 
 function removeImage(index: number): void {
@@ -2000,18 +2034,67 @@ onBeforeUnmount(() => { stopReviewPolling(); clearImages(); revokeMediaUrls() })
         <ol class="workflow-steps workflow-journey" aria-label="评测流程"><li v-for="(step, index) in workflowSteps" :key="step" :class="{ active: workflowStep === index + 1, done: workflowStep > index + 1 }"><span><Check v-if="workflowStep > index + 1" :size="13" /><template v-else>{{ index + 1 }}</template></span><strong>{{ step }}</strong></li></ol>
         <div class="page-heading product-heading report-page-heading"><div><p class="eyebrow">学习反馈 · {{ successResult ? revisionLabel(successResult.version_no) : '' }}</p><h1>{{ successResult?.title || '未命名作文' }}</h1><p>先理解这篇作文，再决定最值得完成的一次修改。</p></div><div class="task-heading-actions"><button class="text-button" type="button" :disabled="isBusy" @click="startNewEssay('image')">开始新的评测</button><button class="icon-text-button secondary-button" type="button" :disabled="isExportingReport" @click="void exportReportPdf"><Download :size="16" />{{ isExportingReport ? '正在生成' : '导出 PDF' }}</button></div></div>
 
-        <section v-if="reviewBatch?.final_evaluation" class="report-performance" aria-labelledby="performance-title">
-          <div class="report-section-heading"><div><p class="eyebrow">综合表现</p><h2 id="performance-title">先看整体，再看细节</h2></div><span class="confidence-chip"><ShieldCheck :size="16" />可信程度 {{ confidencePercent(reviewBatch.final_evaluation.confidence) }}</span></div>
-          <div class="performance-layout">
-            <div class="report-main-score"><strong>{{ reviewBatch.final_evaluation.overall_score ?? '--' }}</strong><span>综合评分</span><p v-if="currentRevisionImprovement !== null" class="version-improvement" :class="{ positive: currentRevisionImprovement > 0 }">较上一版 {{ currentRevisionImprovement > 0 ? `提高 ${currentRevisionImprovement} 分` : currentRevisionImprovement === 0 ? '持平' : `变化 ${currentRevisionImprovement} 分` }}</p></div>
-            <div v-if="reviewBatch.final_evaluation.dimension_scores" class="report-dimensions student-dimensions"><article v-for="dimension in reviewBatch.final_evaluation.dimension_scores" :key="dimension.dimension"><div><strong>{{ dimensionLabel(dimension.dimension) }}</strong><span>{{ dimension.score }} / {{ dimension.max_score }}</span></div><div class="dimension-progress"><i :style="{ width: `${(dimension.score / dimension.max_score) * 100}%` }"></i></div></article></div>
+        <section v-if="reviewBatch?.final_evaluation" class="report-first-look" aria-labelledby="performance-title">
+          <div class="report-result-overview">
+            <div class="report-score-block">
+              <div class="report-score-value" :class="{ 'is-empty': reviewBatch.final_evaluation.overall_score === null }">
+                <strong>{{ reviewBatch.final_evaluation.overall_score ?? '已完成' }}</strong>
+                <span>{{ reviewBatch.final_evaluation.overall_score === null ? '评测' : '分' }}</span>
+              </div>
+              <p v-if="currentRevisionImprovement !== null" class="version-improvement" :class="{ positive: currentRevisionImprovement > 0 }">较上一版 {{ currentRevisionImprovement > 0 ? `提高 ${currentRevisionImprovement} 分` : currentRevisionImprovement === 0 ? '持平' : `变化 ${currentRevisionImprovement} 分` }}</p>
+            </div>
+            <div class="report-result-copy">
+              <div class="report-result-kicker">
+                <p class="eyebrow">综合结果</p>
+                <span class="report-consistency" :class="`report-consistency--${reportConsistency.tone}`"><ShieldCheck :size="15" />评测一致性：{{ reportConsistency.label }}</span>
+              </div>
+              <h2 id="performance-title">{{ reportTopSummary }}</h2>
+              <p>先解决下面这一项，再继续查看完整反馈。</p>
+            </div>
+          </div>
+
+          <div class="report-top-priority">
+            <div class="report-top-priority-number">01</div>
+            <div>
+              <p>最值得先改</p>
+              <h3>{{ reportTopIssues[0]?.suggestion || (weakestDimension ? `优先改善${dimensionLabel(weakestDimension.dimension)}` : '从一处具体表达开始修改') }}</h3>
+              <span v-if="reportTopIssues[0]?.example_revision">{{ reportTopIssues[0].example_revision }}</span>
+              <span v-else>结合下方完整总评，先完成一处清楚、具体的修改。</span>
+            </div>
+            <button class="primary-button" type="button" @click="reviseEssay()"><Edit3 :size="17" />修改作文</button>
+          </div>
+
+          <div class="report-top-insights" :class="{ 'single-column': reportTopIssues.length < 2 }">
+            <section class="report-top-strengths" aria-labelledby="top-strengths-title">
+              <p class="report-top-label" id="top-strengths-title"><CheckCircle2 :size="17" />做得好的地方</p>
+              <ul v-if="reportTopStrengths.length">
+                <li v-for="strength in reportTopStrengths" :key="`${strength.dimension}-${strength.comment}`"><strong>{{ dimensionLabel(strength.dimension) }}</strong><span>{{ strength.comment }}</span></li>
+              </ul>
+              <p v-else class="report-top-fallback"><strong>{{ bestDimension ? dimensionLabel(bestDimension.dimension) : '整体表达' }}</strong><span>{{ bestDimension ? '这是本次评分中表现相对最好的一项。' : '完整优点请继续查看下方总评。' }}</span></p>
+            </section>
+            <section v-if="reportTopIssues.length > 1" class="report-top-issues" aria-labelledby="top-issues-title">
+              <p class="report-top-label" id="top-issues-title"><CircleAlert :size="17" />还需要关注</p>
+              <ol>
+                <li v-for="(issue, index) in reportTopIssues.slice(1, 3)" :key="issue.suggestion"><span>0{{ index + 2 }}</span><p>{{ issue.suggestion }}</p></li>
+              </ol>
+            </section>
+          </div>
+
+          <div v-if="reviewBatch.final_evaluation.dimension_scores?.length" class="report-score-breakdown">
+            <div class="report-score-breakdown-heading"><div><p class="eyebrow">评分构成</p><h3>总分是怎么得到的</h3></div><p>对照各项表现，找到优势和下一步练习重点。</p></div>
+            <div class="report-dimensions report-top-dimensions">
+              <article v-for="dimension in reviewBatch.final_evaluation.dimension_scores" :key="dimension.dimension" :class="{ best: bestDimension?.dimension === dimension.dimension, weakest: bestDimension?.dimension !== dimension.dimension && weakestDimension?.dimension === dimension.dimension }">
+                <div><strong>{{ dimensionLabel(dimension.dimension) }}</strong><span>{{ dimension.score }} / {{ dimension.max_score }}</span></div>
+                <div class="dimension-progress"><i :style="{ width: `${dimension.max_score > 0 ? Math.max(0, Math.min(100, (dimension.score / dimension.max_score) * 100)) : 0}%` }"></i></div>
+                <small v-if="bestDimension?.dimension === dimension.dimension">表现最好</small><small v-else-if="weakestDimension?.dimension === dimension.dimension">优先提升</small>
+              </article>
+            </div>
           </div>
         </section>
 
         <section v-if="reviewBatch?.final_evaluation" class="overall-feedback" aria-labelledby="overall-feedback-title">
-          <div class="report-section-heading"><div><p class="eyebrow">总评</p><h2 id="overall-feedback-title">这篇作文整体怎么样</h2></div></div>
+          <div class="report-section-heading"><div><p class="eyebrow">完整总评</p><h2 id="overall-feedback-title">进一步理解这篇作文</h2></div></div>
           <div class="overall-summary"><span><Sparkles :size="22" /></span><p>{{ reviewBatch.final_evaluation.summary || '作文已经完成整体评测，可以从下面最重要的一项建议开始修改。' }}</p></div>
-          <div class="feedback-signals"><article class="report-strength"><span><CheckCircle2 :size="21" /></span><div><small>主要优点</small><strong>{{ reportStrengths[0] ? dimensionLabel(reportStrengths[0].dimension) : (bestDimension ? dimensionLabel(bestDimension.dimension) : '表达完整') }}</strong><p>{{ reportStrengths[0]?.comment || (bestDimension ? `这一维度得到 ${bestDimension.score} / ${bestDimension.max_score}。` : '作文已经完成整体表达。') }}</p></div></article><article class="report-focus"><span><Edit3 :size="21" /></span><div><small>最重要的问题</small><strong>{{ reportSuggestions[0]?.suggestion || (weakestDimension ? dimensionLabel(weakestDimension.dimension) : '从一处具体表达开始') }}</strong><p>{{ reportSuggestions[0]?.example_revision || '先解决这一项，再继续处理其他细节。' }}</p></div></article></div>
         </section>
 
         <section v-if="reportStrengths.length || reportExcellentExpressions.length" class="learning-highlights" aria-labelledby="learning-highlights-title">
