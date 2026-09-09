@@ -1,0 +1,65 @@
+name: Deploy production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wenheng-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Aliyun
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+
+    steps:
+      - name: Validate required secrets
+        env:
+          SSH_HOST: ${{ secrets.ALIYUN_HOST }}
+          SSH_PORT: ${{ secrets.ALIYUN_SSH_PORT }}
+          SSH_USER: ${{ secrets.ALIYUN_SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.ALIYUN_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.ALIYUN_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          for name in SSH_HOST SSH_PORT SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required GitHub Actions secret: ${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.ALIYUN_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.ALIYUN_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/wenheng-production
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/wenheng-production ~/.ssh/known_hosts
+
+      - name: Deploy pushed commit
+        env:
+          SSH_HOST: ${{ secrets.ALIYUN_HOST }}
+          SSH_PORT: ${{ secrets.ALIYUN_SSH_PORT }}
+          SSH_USER: ${{ secrets.ALIYUN_SSH_USER }}
+        run: |
+          set -Eeuo pipefail
+          ssh \
+            -i ~/.ssh/wenheng-production \
+            -p "${SSH_PORT}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "${SSH_USER}@${SSH_HOST}" \
+            "deploy:${GITHUB_SHA}"
