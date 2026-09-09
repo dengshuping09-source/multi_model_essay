@@ -75,12 +75,17 @@ class OpenAiCompatibleProvider:
         model_name: str,
         api_key: SecretStr | None,
         base_url: str | None,
+        *,
+        max_output_tokens: int | None = None,
+        extra_request_body: dict[str, Any] | None = None,
     ) -> None:
         self.key = key
         self.display_name = display_name
         self.model_name = model_name
         self._api_key = api_key
         self._base_url = base_url
+        self._max_output_tokens = max_output_tokens
+        self._extra_request_body = dict(extra_request_body or {})
 
     def status(self) -> ProviderStatus:
         configured = _has_value(self._api_key) and bool(self._base_url)
@@ -98,7 +103,7 @@ class OpenAiCompatibleProvider:
             raise ProviderUnavailableError(state.detail)
         base_url = (self._base_url or "").rstrip("/")
         endpoint = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model_name,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -108,10 +113,14 @@ class OpenAiCompatibleProvider:
                 },
             ],
             "response_format": {"type": "json_object"},
-            "max_tokens": min(settings.deepseek_max_output_tokens, QUICK_REVIEW_MAX_OUTPUT_TOKENS),
+            "max_tokens": min(
+                settings.deepseek_max_output_tokens,
+                self._max_output_tokens or QUICK_REVIEW_MAX_OUTPUT_TOKENS,
+            ),
             "temperature": 0,
             "stream": False,
         }
+        payload.update(self._extra_request_body)
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(settings.model_review_timeout_seconds, connect=10.0)
@@ -184,9 +193,15 @@ def get_review_provider_registry() -> dict[str, ReviewProvider]:
         "doubao": ArkResponsesProvider(
             "doubao",
             "豆包",
-            settings.ark_model if settings.ark_api_key is not None else settings.doubao_model,
+            settings.ark_quick_model if settings.ark_api_key is not None else settings.doubao_model,
             settings.ark_api_key or settings.doubao_api_key,
             settings.ark_base_url if settings.ark_api_key is not None else settings.doubao_base_url,
+            max_output_tokens=(
+                settings.ark_quick_max_output_tokens if settings.ark_api_key is not None else None
+            ),
+            extra_request_body={"thinking": {"type": "disabled"}}
+            if settings.ark_api_key is not None
+            else None,
         ),
     }
 

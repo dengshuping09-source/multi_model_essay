@@ -105,7 +105,7 @@ def _configured_backends(preferred_keys: list[str]) -> list[DeepAnalysisBackend]
         available["doubao"] = DeepAnalysisBackend(
             "doubao",
             _chat_endpoint(doubao_base_url),
-            settings.ark_model if settings.ark_api_key is not None else settings.doubao_model,
+            settings.ark_deep_model if settings.ark_api_key is not None else settings.doubao_model,
             doubao_key,
         )
     ordered = list(dict.fromkeys([*preferred_keys, "deepseek", "qwen", "doubao"]))
@@ -167,6 +167,10 @@ async def generate_deep_analysis(
             "temperature": 0.1,
             "stream": False,
         }
+        if backend.key == "doubao":
+            # This remains the Lite-only enrichment request. Extra reasoning
+            # is unnecessary for its bounded JSON feedback contract.
+            payload["thinking"] = {"type": "disabled"}
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(settings.model_review_timeout_seconds, connect=10.0)

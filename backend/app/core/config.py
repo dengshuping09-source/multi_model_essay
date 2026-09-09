@@ -40,7 +40,12 @@ class Settings(BaseSettings):
     doubao_model: str = "doubao-pro"
     ark_api_key: SecretStr | None = None
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    # Keep fast core review and optional deep enrichment on purpose-built
+    # routes. ARK_MODEL remains the legacy/on-demand fallback.
     ark_model: str = "doubao-seed-2-0-lite-260215"
+    ark_quick_model: str = "doubao-seed-2-0-mini-260428"
+    ark_quick_max_output_tokens: int = 1_200
+    ark_deep_model: str = "doubao-seed-2-0-lite-260215"
     # A complete result may use the other independent reviews when one remote
     # service is slow.  Keep this comfortably above normal response time, but
     # do not turn one unavailable service into a two-minute page-level wait.

@@ -882,16 +882,12 @@ async def execute_deep_analysis(
             "consistency": final.consistency,
             "disputes": final.disputes or [],
         }
-        model_versions = config.get("model_versions")
-        preferred_provider_keys = [
-            str(item["provider"])
-            for item in model_versions or []
-            if isinstance(item, dict) and item.get("provider")
-        ]
         generated = await generate_deep_analysis(
             final_text.text,
             quick_context,
-            preferred_provider_keys,
+            # Deep feedback supplements the completed quick consensus. Start
+            # with Lite instead of repeating another core reviewer's work.
+            ["doubao"],
         )
         annotations: list[dict[str, object]] = []
         for index, item in enumerate(generated.output.annotations):
