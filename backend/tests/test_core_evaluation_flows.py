@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from time import perf_counter
 from uuid import UUID, uuid4
 
 import cv2
@@ -17,6 +18,8 @@ from app.db.session import get_engine, get_session_factory
 from app.main import app
 from app.modules.ocr.engine import RecognizedRegion
 from app.modules.reviews.contracts import (
+    DeepAnalysisOutput,
+    DeepDimensionDetail,
     DimensionScore,
     EssayReviewOutput,
     EvidenceItem,
@@ -24,7 +27,12 @@ from app.modules.reviews.contracts import (
     ReviewAnnotation,
 )
 from app.modules.reviews.deepseek import ProviderReviewResult
+from app.modules.reviews.deep_analysis import (
+    DeepAnalysisGenerationError,
+    DeepAnalysisProviderResult,
+)
 from app.modules.reviews.providers import ProviderStatus
+from app.modules.reviews.service import execute_deep_analysis, request_deep_analysis
 
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -343,8 +351,9 @@ def test_direct_text_gets_report_and_empty_model_results_do_not_create_one(
                 assert successful_payload["text_source"] == "direct_input"
                 assert successful_payload["final_evaluation"]["overall_score"] == 86
                 assert successful_payload["final_evaluation"]["summary"]
-                assert successful_payload["reviews"][0]["annotations"]
+                assert successful_payload["reviews"][0]["annotations"] == []
                 assert successful_payload["reviews"][0]["result"]["improvement_suggestions"]
+                assert successful_payload["final_evaluation"]["deep_analysis"]["status"] == "not_started"
                 history_after_review = await client.get("/api/essays")
                 assert [item["id"] for item in history_after_review.json()["items"]] == [
                     str(successful_id)
@@ -402,6 +411,199 @@ def test_direct_text_gets_report_and_empty_model_results_do_not_create_one(
                 )
                 assert compact_model_review_count == 0
                 assert compact_source_count == 0
+        finally:
+            await cleanup_records(essay_ids, user_id)
+            await close_test_database()
+
+    asyncio.run(scenario())
+
+
+def test_quick_and_deep_review_share_one_report_and_deep_requests_are_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure_test_database(tmp_path)
+    monkeypatch.setattr(
+        "app.modules.reviews.service.get_review_provider_registry", provider_registry
+    )
+    deep_call_count = 0
+
+    async def fake_deep_analysis(*_: object) -> DeepAnalysisProviderResult:
+        nonlocal deep_call_count
+        deep_call_count += 1
+        return DeepAnalysisProviderResult(
+            output=DeepAnalysisOutput(
+                overall_analysis="The core result is unchanged; this adds sentence-level guidance.",
+                annotations=[
+                    ReviewAnnotation(
+                        category="language",
+                        kind="strength",
+                        severity="low",
+                        quote="golden leaves",
+                        comment="This image is concrete.",
+                        suggestion="Keep this exact visual detail.",
+                    )
+                ],
+                dimension_details=[
+                    DeepDimensionDetail(
+                        dimension="language_and_expression",
+                        explanation="The wording is clear and uses one concrete image.",
+                        evidence=[
+                            EvidenceItem(
+                                quote="golden leaves",
+                                rationale="This phrase provides a visible detail.",
+                            )
+                        ],
+                    )
+                ],
+            ),
+            provider_key="deepseek",
+            model_name="test-deep-model",
+        )
+
+    monkeypatch.setattr(
+        "app.modules.reviews.service.generate_deep_analysis", fake_deep_analysis
+    )
+
+    async def scenario() -> None:
+        essay_ids: list[UUID] = []
+        user_id: UUID | None = None
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                user_id = await authenticate(client)
+                upload = await client.post(
+                    "/api/essays", data={"title": "Tiered review", "original_text": ESSAY_TEXT}
+                )
+                essay_id = UUID(upload.json()["id"])
+                essay_ids.append(essay_id)
+
+                quick = await client.post(
+                    f"/api/essays/{essay_id}/reviews/batches",
+                    json={"providers": ["deepseek", "qwen", "doubao"], "mode": "quick"},
+                )
+                assert quick.status_code == 202, quick.text
+                quick_report = (await client.get(f"/api/essays/{essay_id}/reports/latest")).json()
+                assert quick_report["deep_analysis"]["status"] == "not_started"
+                assert quick_report["overall_score"] == 86
+                batches = (await client.get(f"/api/essays/{essay_id}/reviews/batches")).json()
+                assert batches[0]["review_mode"] == "quick"
+                assert all(not review["annotations"] for review in batches[0]["reviews"])
+
+                async with get_session_factory()() as session:
+                    pending_final, should_start = await request_deep_analysis(session, essay_id)
+                    duplicate_pending, should_start_duplicate = await request_deep_analysis(
+                        session, essay_id
+                    )
+                    assert should_start is True
+                    assert should_start_duplicate is False
+                    assert duplicate_pending.id == pending_final.id
+                    assert duplicate_pending.aggregation_config["deep_analysis"]["status"] == "pending"
+                    await execute_deep_analysis(session, pending_final.id)
+
+                completed = (await client.get(f"/api/essays/{essay_id}/reports/latest")).json()
+                assert completed["id"] == quick_report["id"]
+                assert completed["overall_score"] == quick_report["overall_score"]
+                assert completed["deep_analysis"]["status"] == "completed"
+                assert completed["deep_analysis"]["annotations"][0]["evidence_text"] == "golden leaves"
+                assert completed["aggregation_config"]["evaluation_timing"]["depth_duration_ms"] is not None
+
+                duplicate = await client.post(f"/api/essays/{essay_id}/reports/deep-analysis")
+                assert duplicate.status_code == 202
+                assert duplicate.json()["deep_analysis"]["status"] == "completed"
+                assert deep_call_count == 1
+        finally:
+            await cleanup_records(essay_ids, user_id)
+            await close_test_database()
+
+    asyncio.run(scenario())
+
+
+def test_direct_deep_mode_exposes_quick_report_even_when_enrichment_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure_test_database(tmp_path)
+    monkeypatch.setattr(
+        "app.modules.reviews.service.get_review_provider_registry", provider_registry
+    )
+
+    async def failed_deep_analysis(*_: object) -> DeepAnalysisProviderResult:
+        raise DeepAnalysisGenerationError("深度分析测试失败")
+
+    monkeypatch.setattr(
+        "app.modules.reviews.service.generate_deep_analysis", failed_deep_analysis
+    )
+
+    async def scenario() -> None:
+        essay_ids: list[UUID] = []
+        user_id: UUID | None = None
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                user_id = await authenticate(client)
+                upload = await client.post(
+                    "/api/essays", data={"title": "Direct deep", "original_text": ESSAY_TEXT}
+                )
+                essay_id = UUID(upload.json()["id"])
+                essay_ids.append(essay_id)
+
+                started = await client.post(
+                    f"/api/essays/{essay_id}/reviews/batches",
+                    json={"providers": ["deepseek", "qwen", "doubao"], "mode": "deep"},
+                )
+                assert started.status_code == 202, started.text
+                report = (await client.get(f"/api/essays/{essay_id}/reports/latest")).json()
+                assert report["overall_score"] == 86
+                assert report["summary"]
+                assert report["deep_analysis"]["status"] == "failed"
+                assert report["deep_analysis"]["annotations"] == []
+        finally:
+            await cleanup_records(essay_ids, user_id)
+            await close_test_database()
+
+    asyncio.run(scenario())
+
+
+def test_two_completed_views_do_not_wait_for_one_abnormally_slow_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure_test_database(tmp_path)
+    monkeypatch.setattr(settings, "model_review_quorum_grace_seconds", 0.05)
+
+    class SlowReviewProvider(FakeReviewProvider):
+        async def review(self, essay_text: str, context: object) -> ProviderReviewResult:
+            await asyncio.sleep(1)
+            return await super().review(essay_text, context)
+
+    def mixed_registry() -> dict[str, FakeReviewProvider]:
+        registry = provider_registry()
+        registry["doubao"] = SlowReviewProvider("doubao", score=86)
+        return registry
+
+    monkeypatch.setattr(
+        "app.modules.reviews.service.get_review_provider_registry", mixed_registry
+    )
+
+    async def scenario() -> None:
+        essay_ids: list[UUID] = []
+        user_id: UUID | None = None
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                user_id = await authenticate(client)
+                upload = await client.post("/api/essays", data={"original_text": ESSAY_TEXT})
+                essay_id = UUID(upload.json()["id"])
+                essay_ids.append(essay_id)
+
+                started_at = perf_counter()
+                response = await client.post(
+                    f"/api/essays/{essay_id}/reviews/batches",
+                    json={"providers": ["deepseek", "qwen", "doubao"], "mode": "quick"},
+                )
+                elapsed = perf_counter() - started_at
+                assert response.status_code == 202
+                batch = (await client.get(f"/api/essays/{essay_id}/reviews/batches")).json()[0]
+                assert elapsed < 0.5
+                assert sum(review["status"] == "completed" for review in batch["reviews"]) == 2
+                assert sum(review["status"] == "failed" for review in batch["reviews"]) == 1
+                assert batch["final_evaluation"]["overall_score"] == 86
+                assert batch["final_evaluation"]["aggregation_config"]["confidence_factors"]["completed_provider_count"] == 2
         finally:
             await cleanup_records(essay_ids, user_id)
             await close_test_database()

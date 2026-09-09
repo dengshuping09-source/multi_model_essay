@@ -122,6 +122,15 @@ async def cleanup_user_session_essays(session: AsyncSession, author_id: UUID) ->
         if not finals:
             continue
         latest = finals[0]
+        latest_config = latest.aggregation_config if isinstance(latest.aggregation_config, dict) else {}
+        latest_deep_analysis = latest_config.get("deep_analysis")
+        if (
+            isinstance(latest_deep_analysis, dict)
+            and latest_deep_analysis.get("status") in {"pending", "running"}
+        ):
+            # A requested deep analysis belongs to the already completed report.
+            # Do not compact away its OCR/model context while it is still running.
+            continue
         model_versions = list(
             (
                 await session.execute(
@@ -138,7 +147,7 @@ async def cleanup_user_session_essays(session: AsyncSession, author_id: UUID) ->
                 )
             ).all()
         )
-        config = latest.aggregation_config if isinstance(latest.aggregation_config, dict) else {}
+        config = latest_config
         feedback = (
             config.get("learning_feedback")
             if isinstance(config.get("learning_feedback"), dict)
@@ -160,6 +169,8 @@ async def cleanup_user_session_essays(session: AsyncSession, author_id: UUID) ->
                 "basic_expression_issues": [],
             },
             "model_versions": compact_model_versions,
+            "evaluation_timing": config.get("evaluation_timing"),
+            "deep_analysis": config.get("deep_analysis"),
         }
         if isinstance(latest.dimension_scores, list):
             latest.dimension_scores = [

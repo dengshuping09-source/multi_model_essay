@@ -12,6 +12,7 @@ from app.modules.reviews.deepseek import (
     DeepSeekReviewError,
     DeepSeekResponseFormatError,
     ProviderReviewResult,
+    QUICK_REVIEW_MAX_OUTPUT_TOKENS,
     SYSTEM_PROMPT,
     get_deepseek_client,
     provider_http_error,
@@ -107,7 +108,7 @@ class OpenAiCompatibleProvider:
                 },
             ],
             "response_format": {"type": "json_object"},
-            "max_tokens": settings.deepseek_max_output_tokens,
+            "max_tokens": min(settings.deepseek_max_output_tokens, QUICK_REVIEW_MAX_OUTPUT_TOKENS),
             "temperature": 0,
             "stream": False,
         }

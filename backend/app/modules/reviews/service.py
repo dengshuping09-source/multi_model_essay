@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from statistics import mean
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +32,12 @@ from app.db.models import (
     ScoreEvidence,
 )
 from app.modules.reviews.analysis import aggregate_outputs
-from app.modules.reviews.contracts import EssayReviewOutput
+from app.modules.reviews.contracts import EssayReviewOutput, ReviewAnnotation
+from app.modules.reviews.deep_analysis import (
+    DEEP_ANALYSIS_PROMPT_VERSION,
+    DeepAnalysisGenerationError,
+    generate_deep_analysis,
+)
 from app.modules.reviews.deepseek import (
     PROMPT_VERSION,
     DeepSeekReviewError,
@@ -44,6 +49,7 @@ from app.modules.reviews.providers import ProviderUnavailableError, get_review_p
 from app.modules.reviews.standards import EssayReviewContext, PROMPT_VERSION as STANDARD_PROMPT_VERSION, SCORING_STANDARD_VERSION
 
 DEEPSEEK_PROVIDER = "deepseek"
+REVIEW_MODES = {"quick", "deep"}
 
 
 class EssayNotFoundForReviewError(RuntimeError):
@@ -59,6 +65,10 @@ class ReviewRecheckNotFoundError(RuntimeError):
 
 
 class ReviewRecheckUnavailableError(RuntimeError):
+    pass
+
+
+class DeepAnalysisNotFoundError(RuntimeError):
     pass
 
 
@@ -265,6 +275,32 @@ def review_output_from_record(review: ModelReview) -> EssayReviewOutput | None:
         return None
 
 
+def _quick_review_output(output: EssayReviewOutput) -> EssayReviewOutput:
+    """Keep only data needed to produce the first useful report.
+
+    Scores, dimension rationales and one exact evidence item per dimension remain
+    untouched. Sentence-level scanning is deliberately deferred to the optional
+    deep-analysis task.
+    """
+
+    priority_rank = {"high": 0, "medium": 1, "low": 2}
+    dimensions = [
+        item.model_copy(update={"evidence": item.evidence[:1]})
+        for item in output.dimension_scores
+    ]
+    suggestions = sorted(
+        output.improvement_suggestions,
+        key=lambda item: priority_rank[item.priority],
+    )[:3]
+    return output.model_copy(
+        update={
+            "dimension_scores": dimensions,
+            "annotations": [],
+            "improvement_suggestions": suggestions,
+        }
+    )
+
+
 def is_timeout_error(error: DeepSeekReviewError) -> bool:
     return isinstance(error, DeepSeekTimeoutError)
 
@@ -435,6 +471,7 @@ async def start_review_batch(
     essay_id: UUID,
     provider_keys: list[str] | None = None,
     retry_of_batch_id: UUID | None = None,
+    review_mode: str = "quick",
 ) -> ReviewBatch:
     final_text = await get_final_essay_text(session, essay_id)
     essay = await session.get(Essay, essay_id)
@@ -445,10 +482,13 @@ async def start_review_batch(
     unknown = [key for key in requested if key not in registry]
     if unknown:
         raise ValueError(f"Unknown review provider: {unknown[0]}")
+    if review_mode not in REVIEW_MODES:
+        raise ValueError("Unknown review mode")
     batch = ReviewBatch(
         essay_id=essay_id,
         requested_providers=requested,
         scoring_standard_version=SCORING_STANDARD_VERSION,
+        review_mode=review_mode,
         status=ReviewStatus.RUNNING,
         text_source=final_text.source,
         evaluated_text=final_text.text,
@@ -509,20 +549,65 @@ async def execute_started_review_batch(
     async def evaluate_one(key: str, provider):
         return key, await _call_provider_with_retry(provider, final_text, context)
 
-    # All remote calls are started at once. Their results are written in
-    # completion order so the polling API can accurately report 1/3, 2/3, etc.
-    tasks = [asyncio.create_task(evaluate_one(key, provider)) for key, provider in available]
-    for task in asyncio.as_completed(tasks):
-        key, (result, retry_count, error) = await task
-        review = reviews[key]
-        review.retry_count = retry_count
-        if result is not None:
-            await _persist_provider_output(session, review, result, final_text)
-        else:
-            review.status = ReviewStatus.FAILED
-            review.error_message = str(error)
-            review.raw_response = None
-        await session.commit()
+    # All remote calls start together. Once two independent structured results
+    # are available, the remaining view gets a conservative grace window rather
+    # than holding the student's first report until its full timeout expires.
+    tasks = {
+        asyncio.create_task(evaluate_one(key, provider)): key
+        for key, provider in available
+    }
+    pending = set(tasks)
+    quorum_deadline: float | None = None
+    loop = asyncio.get_running_loop()
+    while pending:
+        timeout = (
+            max(0.0, quorum_deadline - loop.time())
+            if quorum_deadline is not None
+            else None
+        )
+        done, pending = await asyncio.wait(
+            pending,
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in pending:
+                review = reviews[tasks[task]]
+                review.status = ReviewStatus.FAILED
+                review.error_message = "评审在核心结果形成后仍未及时完成"
+                review.raw_response = None
+            await session.commit()
+            pending.clear()
+            break
+
+        for task in done:
+            key, (result, retry_count, error) = await task
+            review = reviews[key]
+            review.retry_count = retry_count
+            if result is not None:
+                await _persist_provider_output(
+                    session,
+                    review,
+                    replace(result, output=_quick_review_output(result.output)),
+                    final_text,
+                )
+            else:
+                review.status = ReviewStatus.FAILED
+                review.error_message = str(error)
+                review.raw_response = None
+            await session.commit()
+
+        completed_count = sum(
+            1 for review in reviews.values() if review.status is ReviewStatus.COMPLETED
+        )
+        if completed_count >= 2 and pending and quorum_deadline is None:
+            quorum_deadline = loop.time() + max(
+                settings.model_review_quorum_grace_seconds,
+                0.0,
+            )
 
     completed = [
         review
@@ -551,9 +636,16 @@ async def run_review_batch(
     provider_keys: list[str] | None = None,
     retry_of_batch_id: UUID | None = None,
     create_recheck: bool = True,
+    review_mode: str = "quick",
 ) -> ReviewBatch:
     """Synchronous service wrapper retained for CLI and offline tests."""
-    batch = await start_review_batch(session, essay_id, provider_keys, retry_of_batch_id)
+    batch = await start_review_batch(
+        session,
+        essay_id,
+        provider_keys,
+        retry_of_batch_id,
+        review_mode,
+    )
     return await execute_started_review_batch(
         session, batch.id, create_recheck=create_recheck
     )
@@ -592,6 +684,14 @@ async def _create_final_evaluation(
         session, [provider_key for provider_key, _ in outputs]
     )
     aggregate = aggregate_outputs(outputs, expected_count, calibration.weights)
+    completed_at = datetime.now(timezone.utc)
+    batch_started_at = batch.created_at
+    if batch_started_at.tzinfo is None:
+        batch_started_at = batch_started_at.replace(tzinfo=timezone.utc)
+    quick_duration_ms = max(
+        0,
+        round((completed_at - batch_started_at).total_seconds() * 1000),
+    )
     final.overall_score = Decimal(str(aggregate.overall_score))
     final.dimension_scores = aggregate.dimensions
     final.summary = aggregate.summary
@@ -612,6 +712,23 @@ async def _create_final_evaluation(
         "calibration_mean_absolute_errors": calibration.mean_absolute_errors,
         "confidence_factors": aggregate.confidence_factors,
         "learning_feedback": aggregate.learning_feedback,
+        "evaluation_timing": {
+            "quick_duration_ms": quick_duration_ms,
+            "depth_duration_ms": None,
+            "total_duration_ms": quick_duration_ms,
+        },
+        "deep_analysis": {
+            "status": "pending" if batch.review_mode == "deep" else "not_started",
+            "requested_mode": batch.review_mode,
+            "error_message": None,
+            "started_at": None,
+            "completed_at": None,
+            "duration_ms": None,
+            "overall_analysis": None,
+            "annotations": [],
+            "dimension_details": [],
+            "basic_expression_issues": [],
+        },
         "model_versions": [
             {
                 "provider": review.model_provider,
@@ -640,6 +757,231 @@ async def _create_final_evaluation(
     essay.status = EssayStatus.EVALUATED
     await session.commit()
     return final
+
+
+def _deep_analysis_payload(final: FinalEvaluation) -> dict[str, object] | None:
+    config = final.aggregation_config if isinstance(final.aggregation_config, dict) else {}
+    payload = config.get("deep_analysis")
+    return payload if isinstance(payload, dict) else None
+
+
+def _with_deep_analysis(
+    final: FinalEvaluation,
+    deep_analysis: dict[str, object],
+    *,
+    depth_duration_ms: int | None = None,
+) -> None:
+    config = dict(final.aggregation_config) if isinstance(final.aggregation_config, dict) else {}
+    config["deep_analysis"] = deep_analysis
+    if depth_duration_ms is not None:
+        timing = dict(config.get("evaluation_timing") or {})
+        quick_duration = timing.get("quick_duration_ms")
+        timing["depth_duration_ms"] = depth_duration_ms
+        timing["total_duration_ms"] = (
+            int(quick_duration) + depth_duration_ms
+            if isinstance(quick_duration, int)
+            else None
+        )
+        config["evaluation_timing"] = timing
+    final.aggregation_config = config
+
+
+async def request_deep_analysis(
+    session: AsyncSession,
+    essay_id: UUID,
+) -> tuple[FinalEvaluation, bool]:
+    final = await session.scalar(
+        select(FinalEvaluation)
+        .where(
+            FinalEvaluation.essay_id == essay_id,
+            FinalEvaluation.status == ReviewStatus.COMPLETED,
+        )
+        .order_by(FinalEvaluation.version.desc())
+        .with_for_update()
+    )
+    if final is None:
+        raise DeepAnalysisNotFoundError("请先完成快速评测")
+    current = _deep_analysis_payload(final)
+    current_status = current.get("status") if current else None
+    if current_status in {"pending", "running", "completed"}:
+        return final, False
+    _with_deep_analysis(
+        final,
+        {
+            "status": "pending",
+            "requested_mode": "deep",
+            "error_message": None,
+            "started_at": None,
+            "completed_at": None,
+            "duration_ms": None,
+            "overall_analysis": None,
+            "annotations": [],
+            "dimension_details": [],
+            "basic_expression_issues": [],
+        },
+    )
+    await session.commit()
+    await session.refresh(final)
+    return final, True
+
+
+def _basic_issue_type(annotation: ReviewAnnotation) -> str:
+    if annotation.issue_type is not None:
+        return annotation.issue_type
+    if annotation.category == "conventions":
+        return "other"
+    if annotation.category in {"language", "expression"}:
+        return "wording"
+    return "sentence"
+
+
+async def execute_deep_analysis(
+    session: AsyncSession,
+    final_evaluation_id: UUID,
+) -> FinalEvaluation:
+    final = await session.get(FinalEvaluation, final_evaluation_id)
+    if final is None:
+        raise DeepAnalysisNotFoundError("评测报告不存在")
+    current = _deep_analysis_payload(final)
+    if current and current.get("status") in {"running", "completed"}:
+        return final
+
+    started_at = datetime.now(timezone.utc)
+    running_payload = dict(current or {})
+    running_payload.update(
+        {
+            "status": "running",
+            "requested_mode": "deep",
+            "error_message": None,
+            "started_at": started_at.isoformat(),
+            "completed_at": None,
+        }
+    )
+    _with_deep_analysis(final, running_payload)
+    await session.commit()
+
+    try:
+        final_text = await get_final_essay_text(session, final.essay_id)
+        config = dict(final.aggregation_config) if isinstance(final.aggregation_config, dict) else {}
+        feedback = config.get("learning_feedback") if isinstance(config.get("learning_feedback"), dict) else {}
+        dimensions = [
+            {
+                "dimension": item.get("dimension"),
+                "score": item.get("score"),
+                "max_score": item.get("max_score"),
+            }
+            for item in (final.dimension_scores or [])
+            if isinstance(item, dict)
+        ]
+        quick_context: dict[str, object] = {
+            "overall_score": float(final.overall_score) if final.overall_score is not None else None,
+            "summary": final.summary,
+            "dimension_scores": dimensions,
+            "strengths": list(feedback.get("strengths") or [])[:3],
+            "priority_issues": list(feedback.get("priority_issues") or [])[:3],
+            "consistency": final.consistency,
+            "disputes": final.disputes or [],
+        }
+        model_versions = config.get("model_versions")
+        preferred_provider_keys = [
+            str(item["provider"])
+            for item in model_versions or []
+            if isinstance(item, dict) and item.get("provider")
+        ]
+        generated = await generate_deep_analysis(
+            final_text.text,
+            quick_context,
+            preferred_provider_keys,
+        )
+        annotations: list[dict[str, object]] = []
+        for index, item in enumerate(generated.output.annotations):
+            start_offset, end_offset = _resolve_quote_offsets(
+                final_text.text,
+                item.quote,
+                item.start_offset,
+                item.end_offset,
+            )
+            ocr_block_id = await _matching_ocr_block_id(session, final_text, item.quote)
+            ocr_block = await session.get(OcrBlock, ocr_block_id) if ocr_block_id else None
+            annotations.append(
+                {
+                    "id": str(uuid5(final.id, f"deep:{index}:{item.quote}:{item.comment}")),
+                    "category": item.category,
+                    "kind": item.kind,
+                    "issue_type": item.issue_type,
+                    "severity": item.severity,
+                    "evidence_text": item.quote,
+                    "start_offset": start_offset,
+                    "end_offset": end_offset,
+                    "comment": item.comment,
+                    "suggestion": item.suggestion,
+                    "ocr_block_id": str(ocr_block_id) if ocr_block_id else None,
+                    "source_id": str(ocr_block.source_id) if ocr_block is not None else None,
+                    "polygon_original": ocr_block.polygon_original if ocr_block is not None else None,
+                }
+            )
+        basic_expression_issues = [
+            {
+                "issue_type": _basic_issue_type(item),
+                "category": item.category,
+                "severity": item.severity,
+                "quote": item.quote,
+                "comment": item.comment,
+                "suggestion": item.suggestion,
+                "start_offset": annotation["start_offset"],
+                "end_offset": annotation["end_offset"],
+            }
+            for item, annotation in zip(generated.output.annotations, annotations, strict=True)
+            if item.kind == "improvement"
+            and (item.issue_type is not None or item.category in {"language", "expression", "conventions"})
+        ]
+        completed_at = datetime.now(timezone.utc)
+        duration_ms = max(0, round((completed_at - started_at).total_seconds() * 1000))
+        completed_payload: dict[str, object] = {
+            "status": "completed",
+            "requested_mode": "deep",
+            "error_message": None,
+            "started_at": started_at.isoformat(),
+            "completed_at": completed_at.isoformat(),
+            "duration_ms": duration_ms,
+            "overall_analysis": generated.output.overall_analysis,
+            "annotations": annotations,
+            "dimension_details": [
+                item.model_dump(mode="json") for item in generated.output.dimension_details
+            ],
+            "basic_expression_issues": basic_expression_issues,
+            "prompt_version": DEEP_ANALYSIS_PROMPT_VERSION,
+            "model_version": {
+                "provider": generated.provider_key,
+                "model": generated.model_name,
+            },
+        }
+        _with_deep_analysis(final, completed_payload, depth_duration_ms=duration_ms)
+        await session.commit()
+        return final
+    except Exception as exc:
+        completed_at = datetime.now(timezone.utc)
+        duration_ms = max(0, round((completed_at - started_at).total_seconds() * 1000))
+        failed_payload = dict(running_payload)
+        failed_payload.update(
+            {
+                "status": "failed",
+                "error_message": (
+                    str(exc)
+                    if isinstance(exc, DeepAnalysisGenerationError)
+                    else "深度分析暂时未完成，请稍后重试"
+                ),
+                "completed_at": completed_at.isoformat(),
+                "duration_ms": duration_ms,
+                "overall_analysis": None,
+                "annotations": [],
+                "dimension_details": [],
+                "basic_expression_issues": [],
+            }
+        )
+        _with_deep_analysis(final, failed_payload, depth_duration_ms=duration_ms)
+        await session.commit()
+        return final
 
 
 async def execute_review_recheck(
@@ -750,4 +1092,3 @@ async def get_latest_final_evaluation(session: AsyncSession, essay_id: UUID) -> 
 
 def provider_statuses():
     return [provider.status() for provider in get_review_provider_registry().values()]
-

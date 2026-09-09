@@ -34,6 +34,7 @@ class ReviewBatch(UuidPrimaryKeyMixin, TimestampMixin, Base):
     essay_id: Mapped[UUID] = mapped_column(ForeignKey("essays.id", ondelete="CASCADE"), index=True)
     requested_providers: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default="[]")
     scoring_standard_version: Mapped[str] = mapped_column(String(100))
+    review_mode: Mapped[str] = mapped_column(String(20), default="quick", server_default="quick")
     status: Mapped[ReviewStatus] = mapped_column(database_enum(ReviewStatus, "review_batch_status"))
     text_source: Mapped[str] = mapped_column(String(40))
     evaluated_text: Mapped[str] = mapped_column(Text)

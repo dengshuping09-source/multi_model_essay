@@ -20,11 +20,13 @@ from app.modules.reviews.polish import (
 )
 from app.modules.reports.pdf import build_report_pdf
 from app.modules.reviews.service import (
+    DeepAnalysisNotFoundError,
     EssayNotFoundForReviewError,
     FinalEssayTextUnavailableError,
     ReviewRecheckNotFoundError,
     ReviewRecheckUnavailableError,
     execute_review_recheck,
+    execute_deep_analysis,
     get_essay_reviews,
     get_essay_review_batches,
     get_final_essay_text,
@@ -32,12 +34,14 @@ from app.modules.reviews.service import (
     get_review_batch,
     is_timeout_error,
     review_output_from_record,
+    request_deep_analysis,
     run_deepseek_review,
     execute_started_review_batch,
     start_review_batch,
 )
 from app.schemas.review import (
     AnnotationDetailResponse,
+    DeepAnalysisResponse,
     EssayPolishResponse,
     FinalEvaluationResponse,
     ModelReviewListResponse,
@@ -58,7 +62,7 @@ async def _execute_review_batch_in_background(batch_id: UUID) -> None:
     """Use a fresh database session after the request response has returned."""
     async with get_session_factory()() as session:
         try:
-            await execute_started_review_batch(session, batch_id)
+            batch = await execute_started_review_batch(session, batch_id)
         except Exception:
             logger.exception("Background review batch failed", extra={"batch_id": str(batch_id)})
             batch = await get_review_batch(session, batch_id)
@@ -69,6 +73,26 @@ async def _execute_review_batch_in_background(batch_id: UUID) -> None:
                     review.status = ReviewStatus.FAILED
                     review.error_message = "当前评审暂时未能完成"
             await session.commit()
+            return
+        if batch.review_mode == "deep" and batch.status is ReviewStatus.COMPLETED:
+            final = await session.scalar(
+                select(FinalEvaluation)
+                .where(FinalEvaluation.batch_id == batch.id)
+                .order_by(FinalEvaluation.version.desc())
+            )
+            if final is not None:
+                await execute_deep_analysis(session, final.id)
+
+
+async def _execute_deep_analysis_in_background(final_evaluation_id: UUID) -> None:
+    async with get_session_factory()() as session:
+        try:
+            await execute_deep_analysis(session, final_evaluation_id)
+        except Exception:
+            logger.exception(
+                "Background deep analysis failed",
+                extra={"final_evaluation_id": str(final_evaluation_id)},
+            )
 
 
 def _review_response(review: ModelReview) -> ModelReviewResponse:
@@ -126,6 +150,17 @@ def _stored_polish(final: FinalEvaluation) -> EssayPolishResponse | None:
         return None
 
 
+def _stored_deep_analysis(final: FinalEvaluation) -> DeepAnalysisResponse | None:
+    config = final.aggregation_config if isinstance(final.aggregation_config, dict) else {}
+    payload = config.get("deep_analysis")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return DeepAnalysisResponse.model_validate(payload)
+    except ValueError:
+        return None
+
+
 def _final_response(final: FinalEvaluation) -> FinalEvaluationResponse:
     config = final.aggregation_config if isinstance(final.aggregation_config, dict) else {}
     return FinalEvaluationResponse(
@@ -147,6 +182,7 @@ def _final_response(final: FinalEvaluation) -> FinalEvaluationResponse:
             if isinstance(config.get("learning_feedback"), dict)
             else None
         ),
+        deep_analysis=_stored_deep_analysis(final),
         polish=_stored_polish(final),
         created_at=final.created_at,
         updated_at=final.updated_at,
@@ -220,6 +256,7 @@ async def _batch_response(session: AsyncSession, batch: ReviewBatch) -> ReviewBa
         essay_id=batch.essay_id,
         requested_providers=batch.requested_providers,
         scoring_standard_version=batch.scoring_standard_version,
+        review_mode=batch.review_mode if batch.review_mode in {"quick", "deep"} else "quick",
         status=batch.status,
         text_source=batch.text_source,
         error_message=batch.error_message,
@@ -285,7 +322,12 @@ async def create_review_batch(
         )
         if running_batch_id is not None:
             return await _batch_response(session, await get_review_batch(session, running_batch_id))
-        batch = await start_review_batch(session, essay_id, payload.providers)
+        batch = await start_review_batch(
+            session,
+            essay_id,
+            payload.providers,
+            review_mode=payload.mode,
+        )
     except FinalEssayTextUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except ValueError as exc:
@@ -326,7 +368,11 @@ async def retry_review_batch(
     if running_batch_id is not None:
         return await _batch_response(session, await get_review_batch(session, running_batch_id))
     batch = await start_review_batch(
-        session, essay_id, previous.requested_providers, retry_of_batch_id=batch_id
+        session,
+        essay_id,
+        previous.requested_providers,
+        retry_of_batch_id=batch_id,
+        review_mode=previous.review_mode,
     )
     background_tasks.add_task(_execute_review_batch_in_background, batch.id)
     return await _batch_response(session, batch)
@@ -364,6 +410,28 @@ async def latest_report(
     final = await get_latest_final_evaluation(session, essay_id)
     if final is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No final report is available")
+    return _final_response(final)
+
+
+@router.post(
+    "/{essay_id}/reports/deep-analysis",
+    response_model=FinalEvaluationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_deep_analysis(
+    essay_id: UUID,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_db_session),
+) -> FinalEvaluationResponse:
+    if await get_owned_essay(session, essay_id, user) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+    try:
+        final, should_start = await request_deep_analysis(session, essay_id)
+    except DeepAnalysisNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if should_start:
+        background_tasks.add_task(_execute_deep_analysis_in_background, final.id)
     return _final_response(final)
 
 

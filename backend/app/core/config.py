@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     # service is slow.  Keep this comfortably above normal response time, but
     # do not turn one unavailable service into a two-minute page-level wait.
     model_review_timeout_seconds: float = 45.0
+    model_review_quorum_grace_seconds: float = 12.0
     model_review_max_retries: int = 0
     model_calibration_min_samples: int = 8
     session_ttl_hours: int = 168

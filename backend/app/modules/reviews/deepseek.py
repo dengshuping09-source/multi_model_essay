@@ -9,7 +9,8 @@ from pydantic import ValidationError
 from app.core.config import settings
 from app.modules.reviews.contracts import EssayReviewOutput, parse_essay_review_output
 
-PROMPT_VERSION = "essay-review-v2"
+PROMPT_VERSION = "essay-review-v3-quick"
+QUICK_REVIEW_MAX_OUTPUT_TOKENS = 1_800
 
 
 class DeepSeekReviewError(RuntimeError):
@@ -64,7 +65,7 @@ Return only one JSON object. The output must satisfy this exact contract:
   ]
 }
 
-Use each required dimension exactly once. Annotations must include both useful improvements and genuinely strong sentences when present. Mark positive annotations with kind=strength and explain why the expression, description, or structure works; do not invent praise. Use issue_type only for improvement annotations to distinguish typos, grammar or ill-formed sentences, punctuation, wording, and other sentence-level issues. Every evidence quote and annotation quote must be copied exactly from the essay. Offset values are zero-based character offsets; omit both offsets if you cannot provide an exact range. Do not invent facts, author identity, or external context. JSON is required."""
+Use each required dimension exactly once. Follow the user's stage instruction for output depth. In the quick stage, annotations must be an empty list, each dimension may include at most one necessary evidence item, and only the most important suggestions should be returned. Every evidence quote must be copied exactly from the essay. Offset values are zero-based character offsets; omit both offsets if you cannot provide an exact range. Do not invent facts, author identity, or external context. JSON is required."""
 
 
 class DeepSeekReviewClient:
@@ -80,7 +81,7 @@ class DeepSeekReviewClient:
                 {"role": "user", "content": f"{context_instruction or ''}\n\nEssay to review:\n{essay_text}"},
             ],
             "response_format": {"type": "json_object"},
-            "max_tokens": settings.deepseek_max_output_tokens,
+            "max_tokens": min(settings.deepseek_max_output_tokens, QUICK_REVIEW_MAX_OUTPUT_TOKENS),
             "stream": False,
         }
         timeout = httpx.Timeout(settings.deepseek_timeout_seconds, connect=10.0)

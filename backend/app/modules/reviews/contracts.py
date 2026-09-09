@@ -105,6 +105,33 @@ class EssayReviewOutput(BaseModel):
         return self
 
 
+class DeepDimensionDetail(BaseModel):
+    """Additional evidence for an existing score; it never recalculates that score."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dimension: DimensionCode
+    explanation: str = Field(min_length=1, max_length=2_000)
+    evidence: list[EvidenceItem] = Field(default_factory=list, max_length=4)
+
+
+class DeepAnalysisOutput(BaseModel):
+    """Optional report enrichment generated after the core evaluation is available."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    overall_analysis: str = Field(min_length=1, max_length=2_000)
+    annotations: list[ReviewAnnotation] = Field(default_factory=list, max_length=16)
+    dimension_details: list[DeepDimensionDetail] = Field(default_factory=list, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_dimension_details(self) -> DeepAnalysisOutput:
+        dimensions = [item.dimension for item in self.dimension_details]
+        if len(dimensions) != len(set(dimensions)):
+            raise ValueError("dimension_details must not repeat a dimension")
+        return self
+
+
 def parse_essay_review_output(payload: str | dict[str, Any]) -> EssayReviewOutput:
     """Parse a model response while normalising only unambiguous wire-format drift.
 
@@ -178,6 +205,12 @@ def parse_essay_review_output(payload: str | dict[str, Any]) -> EssayReviewOutpu
         ]
 
     return EssayReviewOutput.model_validate(normalized)
+
+
+def parse_json_object(payload: str | dict[str, Any]) -> dict[str, Any]:
+    """Expose the tolerant JSON-object extraction used by structured review calls."""
+
+    return _json_object_from_payload(payload)
 
 
 def _normalise_dimension_score(value: dict[str, Any]) -> dict[str, Any]:

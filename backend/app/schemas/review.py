@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -72,6 +72,20 @@ class ServiceStatusResponse(BaseModel):
 
 class ReviewBatchRequest(BaseModel):
     providers: list[str] = Field(default_factory=lambda: ["deepseek", "qwen", "doubao"], min_length=1, max_length=3)
+    mode: Literal["quick", "deep"] = "quick"
+
+
+class DeepAnalysisResponse(BaseModel):
+    status: Literal["not_started", "pending", "running", "completed", "failed"]
+    requested_mode: Literal["quick", "deep"] = "quick"
+    error_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    overall_analysis: str | None = None
+    annotations: list[dict[str, Any]] = Field(default_factory=list)
+    dimension_details: list[dict[str, Any]] = Field(default_factory=list)
+    basic_expression_issues: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RecheckEvaluationSnapshot(BaseModel):
@@ -113,6 +127,7 @@ class FinalEvaluationResponse(BaseModel):
     disputes: list[dict[str, Any]] | None
     aggregation_config: dict[str, Any] | None
     learning_feedback: dict[str, Any] | None = None
+    deep_analysis: DeepAnalysisResponse | None = None
     polish: "EssayPolishResponse | None" = None
     created_at: datetime
     updated_at: datetime
@@ -123,6 +138,7 @@ class ReviewBatchResponse(BaseModel):
     essay_id: UUID
     requested_providers: list[str]
     scoring_standard_version: str
+    review_mode: Literal["quick", "deep"] = "quick"
     status: ReviewStatus
     text_source: str
     error_message: str | None

@@ -16,7 +16,6 @@ import {
   Download,
   Edit3,
   FileText,
-  Gauge,
   Home,
   ImageUp,
   Images,
@@ -223,6 +222,8 @@ type AppView = 'home' | 'compose' | 'correction' | 'review' | 'report' | 'histor
 type EssayWorkflowView = Extract<AppView, 'compose' | 'correction' | 'review' | 'report'>
 type ProtectedIntent = { view?: Exclude<AppView, 'home'>; essayMode?: 'text' | 'image' | 'demo' }
 type PersonalSection = 'growth' | 'essays' | 'settings'
+type AnnotationSelectionOrigin = 'text' | 'directory' | 'external'
+type AnnotationDirection = 'keep' | 'improve' | 'fix'
 interface EssayHistoryItem { id: string; root_essay_id: string; parent_essay_id: string | null; version_no: number; version_count: number; title: string | null; grade_level: string | null; genre: string | null; status: string; created_at: string; latest_score: number | null; image_count: number }
 interface PendingRevisionMeta { parent_id: string; version: number; source_text: string }
 interface EssayVersionSummary { id: string; root_essay_id: string; parent_essay_id: string | null; version_no: number; title: string | null; created_at: string; overall_score: number | null; dimension_scores: FinalEvaluationResult['dimension_scores']; summary: string | null; top_issue: string | null }
@@ -234,13 +235,45 @@ interface LearningStrength { dimension: ReviewDimension['dimension']; comment: s
 interface ExcellentExpression { quote: string; reason: string; dimension: ReviewDimension['dimension'] }
 interface BasicExpressionIssue { issue_type: 'typo' | 'grammar' | 'punctuation' | 'wording' | 'sentence' | 'other'; category: string; severity: 'low' | 'medium' | 'high'; quote: string; comment: string; suggestion: string; start_offset: number | null; end_offset: number | null }
 interface LearningFeedback { strengths: LearningStrength[]; excellent_expressions: ExcellentExpression[]; priority_issues: ReviewSuggestion[]; basic_expression_issues: BasicExpressionIssue[] }
+interface DeepDimensionDetail { dimension: ReviewDimension['dimension']; explanation: string; evidence: ReviewEvidence[] }
+interface DeepAnalysisResult { status: 'not_started' | 'pending' | 'running' | 'completed' | 'failed'; requested_mode: 'quick' | 'deep'; error_message: string | null; started_at: string | null; completed_at: string | null; duration_ms: number | null; overall_analysis: string | null; annotations: ReviewAnnotationDetail[]; dimension_details: DeepDimensionDetail[]; basic_expression_issues: BasicExpressionIssue[] }
 interface AnnotatedTextSegment { text: string; annotations: ReviewAnnotationDetail[] }
 interface PolishTextSegment { text: string; changed: boolean; changeIndex: number | null }
 interface ConfidenceFactor { factor: string; label: string; value: number; detail: string }
 interface RecheckEvaluationSnapshot { id: string; version: number; overall_score: number | null; confidence: number | null; average_dimension_spread: number | null; dispute_count: number }
-interface FinalEvaluationResult { version?: number; status?: string; overall_score: number | null; dimension_scores: Array<{ dimension: ReviewDimension['dimension']; score: number; max_score: number; spread: number; provider_scores: Record<string, number> }> | null; summary: string | null; confidence: number | null; consistency: string | null; disputes: Array<Record<string, unknown>> | null; learning_feedback?: LearningFeedback | null; polish?: EssayPolishResult | null; aggregation_config?: { strategy?: string; calibration_min_samples?: number; calibration_sample_counts?: Record<string, number>; provider_weights?: Record<string, number> | null; confidence_factors?: { explanation?: ConfidenceFactor[]; average_dimension_spread?: number; completed_provider_count?: number; expected_provider_count?: number } } | null }
+interface FinalEvaluationResult { version?: number; status?: string; overall_score: number | null; dimension_scores: Array<{ dimension: ReviewDimension['dimension']; score: number; max_score: number; spread?: number; provider_scores?: Record<string, number> }> | null; summary: string | null; confidence: number | null; consistency: string | null; disputes: Array<Record<string, unknown>> | null; learning_feedback?: LearningFeedback | null; deep_analysis?: DeepAnalysisResult | null; polish?: EssayPolishResult | null; aggregation_config?: { strategy?: string; dispute_spread?: number; calibration_min_samples?: number; calibration_sample_counts?: Record<string, number>; provider_weights?: Record<string, number> | null; evaluation_timing?: { quick_duration_ms?: number | null; depth_duration_ms?: number | null; total_duration_ms?: number | null }; confidence_factors?: { explanation?: ConfidenceFactor[]; average_dimension_spread?: number; completed_provider_count?: number; expected_provider_count?: number; excluded_provider_keys?: string[]; dispute_count?: number } } | null }
 interface ReviewRecheck { id: string; status: 'pending' | 'running' | 'completed' | 'skipped' | 'failed'; trigger_reason: string; result_summary: string | null; baseline_final_evaluation_id: string | null; recheck_batch_id: string | null; resolved_final_evaluation_id: string | null; started_at: string | null; completed_at: string | null; baseline_evaluation?: RecheckEvaluationSnapshot | null; resolved_evaluation?: RecheckEvaluationSnapshot | null }
-interface ReviewBatchResult { id: string; status: 'running' | 'completed' | 'failed'; requested_providers: string[]; reviews: ModelReviewResult[]; final_evaluation: FinalEvaluationResult | null; rechecks: ReviewRecheck[] }
+interface ReviewBatchResult { id: string; status: 'running' | 'completed' | 'failed'; review_mode?: 'quick' | 'deep'; requested_providers: string[]; reviews: ModelReviewResult[]; final_evaluation: FinalEvaluationResult | null; rechecks: ReviewRecheck[] }
+interface ReportTrustSummary { headline: string; explanation: string; tone: 'high' | 'medium' | 'low' | 'unknown' }
+interface ReportTrustSummaryInput { consistency?: string | null; disputes?: Array<Record<string, unknown>> | null; disputeDimensions: string[]; completed: number; expected: number; recheckStatus: ReviewRecheck['status'] | null }
+interface DimensionTrustDetail { dimension: ReviewDimension['dimension']; score: number; maxScore: number; spread: number | null; perspectiveCount: number; state: 'consensus' | 'disputed' | 'unknown'; perspectives: Array<{ label: string; score: number | null; maxScore: number | null; rationale: string; evidence: ReviewEvidence | null }> }
+
+function buildReportTrustSummary(input: ReportTrustSummaryInput): ReportTrustSummary {
+  const { consistency, disputes, disputeDimensions, completed, expected, recheckStatus } = input
+  const coverageIsPartial = expected > 0 && completed < expected
+  const hasRecordedDisputes = Array.isArray(disputes) && disputes.length > 0
+  const disputeArea = disputeDimensions.length ? `差异集中在${disputeDimensions.join('、')}` : '部分判断之间存在差异'
+
+  if (hasRecordedDisputes) {
+    const marked = consistency === 'low' ? '存在较明显分歧' : '部分判断存在差异'
+    if (recheckStatus === 'completed') {
+      return { headline: `${marked}，已完成复核`, explanation: `${disputeArea}，综合结论已结合复核结果。`, tone: consistency === 'low' ? 'low' : 'medium' }
+    }
+    if (recheckStatus === 'running') {
+      return { headline: `${marked}，正在复核`, explanation: `${disputeArea}，系统正在进一步比较判断依据。`, tone: consistency === 'low' ? 'low' : 'medium' }
+    }
+    return { headline: marked, explanation: `${disputeArea}，可展开查看具体依据和复核状态。`, tone: consistency === 'low' ? 'low' : 'medium' }
+  }
+
+  if (coverageIsPartial) {
+    return { headline: '本次评审视角较少', explanation: `已有 ${completed} / ${expected} 个独立判断形成有效结果，请结合具体反馈理解分数。`, tone: 'medium' }
+  }
+  if (consistency === 'high') return { headline: '主要判断一致', explanation: '各评分维度的独立判断较为接近，综合结论有较充分的共同依据。', tone: 'high' }
+  if (consistency === 'medium') return { headline: '主要判断基本一致', explanation: '各项判断整体接近，个别维度的评价存在一定差异。', tone: 'medium' }
+  if (consistency === 'low') return { headline: '评审依据需要谨慎理解', explanation: '有效判断的覆盖或接近程度有限，建议重点查看具体评分依据。', tone: 'low' }
+  return { headline: '已汇总现有评审依据', explanation: '这份报告未保存完整的一致性明细，可继续查看已有评分和评语。', tone: 'unknown' }
+}
+
 const MAX_IMAGES = 10
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024
 const MAX_TEXT_LENGTH = 50_000
@@ -297,6 +330,8 @@ const isUploadingAvatar = ref(false)
 const historyItems = ref<EssayHistoryItem[]>([])
 const reviewBatch = ref<ReviewBatchResult | null>(null)
 const isBatchReviewing = ref(false)
+const selectedReviewMode = ref<'quick' | 'deep'>('quick')
+const isRequestingDeepAnalysis = ref(false)
 const isRechecking = ref(false)
 const isRestoringHistory = ref(false)
 const historyError = ref('')
@@ -336,12 +371,16 @@ const isLoadingDemo = ref(false)
 const pendingRevision = ref<PendingRevisionMeta | null>(null)
 const versionHistory = ref<EssayVersionHistory | null>(null)
 const selectedReportAnnotationId = ref<string | null>(null)
+const emphasizedReportAnnotationId = ref<string | null>(null)
+const reportTrustDetailsRef = ref<HTMLDetailsElement | null>(null)
 const polishResult = ref<EssayPolishResult | null>(null)
 const isPolishing = ref(false)
 const polishErrorMessage = ref('')
 const polishViewMode = ref<'compare' | 'polished'>('compare')
 const annotationReturnToReport = ref(false)
 let reviewPollingTimer: ReturnType<typeof setInterval> | null = null
+let depthAnalysisPollingTimer: ReturnType<typeof setInterval> | null = null
+let reportAnnotationEmphasisTimer: number | null = null
 let selectedImageIdSequence = 0
 
 const isBusy = computed(() => isSubmitting.value || isRecognizing.value || isSavingCorrection.value || isBatchReviewing.value || isRechecking.value || isRestoringHistory.value)
@@ -376,8 +415,96 @@ const essayContentReady = computed(
   () => Boolean(successResult.value && (essayText.value.trim() || correctionResult.value?.status === 'confirmed')),
 )
 const canRequestReview = computed(() => essayContentReady.value && !isBatchReviewing.value)
-const reportConfidenceFactors = computed<ConfidenceFactor[]>(
-  () => reviewBatch.value?.final_evaluation?.aggregation_config?.confidence_factors?.explanation ?? [],
+const reportDeepAnalysis = computed(() => reviewBatch.value?.final_evaluation?.deep_analysis ?? null)
+const isLegacyReport = computed(() => Boolean(
+  reviewBatch.value?.final_evaluation
+  && reviewBatch.value.final_evaluation.deep_analysis == null
+  && !Object.prototype.hasOwnProperty.call(
+    reviewBatch.value.final_evaluation.aggregation_config ?? {},
+    'deep_analysis',
+  ),
+))
+const deepAnalysisStatus = computed(() => reportDeepAnalysis.value?.status ?? (isLegacyReport.value ? 'legacy' : 'not_started'))
+const deepAnalysisAvailable = computed(() => deepAnalysisStatus.value === 'completed' || deepAnalysisStatus.value === 'legacy')
+const deepAnalysisIsRunning = computed(() => deepAnalysisStatus.value === 'pending' || deepAnalysisStatus.value === 'running')
+const reportEvaluationTiming = computed(() => reviewBatch.value?.final_evaluation?.aggregation_config?.evaluation_timing ?? null)
+const completedReportReviews = computed(() =>
+  reviewBatch.value?.reviews.filter((review) => review.status === 'completed' && review.result) ?? [],
+)
+const reportCompletedReviewCount = computed(() =>
+  reviewBatch.value?.final_evaluation?.aggregation_config?.confidence_factors?.completed_provider_count
+  ?? completedReportReviews.value.length,
+)
+const reportExpectedReviewCount = computed(() =>
+  reviewBatch.value?.final_evaluation?.aggregation_config?.confidence_factors?.expected_provider_count
+  ?? reviewBatch.value?.requested_providers.length
+  ?? 0,
+)
+const reportDisputes = computed(() => reviewBatch.value?.final_evaluation?.disputes ?? [])
+const reportCompletedRecheck = computed(() =>
+  [...(reviewBatch.value?.rechecks ?? [])].reverse().find((recheck) => recheck.status === 'completed') ?? null,
+)
+const reportActiveRecheck = computed(() =>
+  [...(reviewBatch.value?.rechecks ?? [])].reverse().find((recheck) => recheck.status === 'running' || recheck.status === 'pending') ?? null,
+)
+const reportDimensionTrustDetails = computed<DimensionTrustDetail[]>(() => {
+  const final = reviewBatch.value?.final_evaluation
+  const hasDisputeRecord = Array.isArray(final?.disputes)
+  const disputedDimensions = new Set(
+    reportDisputes.value.flatMap((dispute) =>
+      dispute.type === 'dimension_disagreement' && typeof dispute.dimension === 'string'
+        ? [dispute.dimension]
+        : [],
+    ),
+  )
+  return (final?.dimension_scores ?? []).map((dimension) => {
+    const providerScores = Object.values(dimension.provider_scores ?? {}).filter((score) => Number.isFinite(score))
+    const perspectives: DimensionTrustDetail['perspectives'] = completedReportReviews.value.flatMap((review, index) => {
+      const reviewDimension = review.result?.dimension_scores.find((item) => item.dimension === dimension.dimension)
+      if (!reviewDimension?.rationale?.trim()) return []
+      return [{
+        label: `独立判断 ${index + 1}`,
+        score: reviewDimension.score,
+        maxScore: reviewDimension.max_score,
+        rationale: reviewDimension.rationale.trim(),
+        evidence: reviewDimension.evidence.find((item) => item.quote?.trim()) ?? null,
+      }]
+    })
+    const deepDetail = reportDeepAnalysis.value?.status === 'completed'
+      ? reportDeepAnalysis.value.dimension_details.find((item) => item.dimension === dimension.dimension)
+      : null
+    if (deepDetail?.explanation.trim()) {
+      perspectives.push({
+        label: '深度分析补充',
+        score: null,
+        maxScore: null,
+        rationale: deepDetail.explanation.trim(),
+        evidence: deepDetail.evidence.find((item) => item.quote?.trim()) ?? null,
+      })
+    }
+    return {
+      dimension: dimension.dimension,
+      score: dimension.score,
+      maxScore: dimension.max_score,
+      spread: typeof dimension.spread === 'number' && Number.isFinite(dimension.spread) ? dimension.spread : null,
+      perspectiveCount: providerScores.length,
+      state: disputedDimensions.has(dimension.dimension)
+        ? 'disputed'
+        : hasDisputeRecord && providerScores.length >= 2
+          ? 'consensus'
+          : 'unknown',
+      perspectives,
+    }
+  })
+})
+const reportConsensusDimensions = computed(() =>
+  reportDimensionTrustDetails.value.filter((dimension) => dimension.state === 'consensus'),
+)
+const reportDisputedDimensions = computed(() =>
+  reportDimensionTrustDetails.value.filter((dimension) => dimension.state === 'disputed'),
+)
+const reportOtherDisputes = computed(() =>
+  reportDisputes.value.filter((dispute) => dispute.type !== 'dimension_disagreement'),
 )
 const completedEssayCount = computed(() => historyItems.value.filter((item) => item.latest_score !== null).length)
 const historyGroups = computed<EssayHistoryGroup[]>(() => {
@@ -418,14 +545,19 @@ const reportEssayText = computed(() =>
   || '',
 )
 const reportAnnotations = computed<ReviewAnnotationDetail[]>(() => {
-  const unique = new Map<string, ReviewAnnotationDetail>()
-  for (const annotation of reviewBatch.value?.reviews.flatMap((review) => review.annotations ?? []) ?? []) {
-    const key = `${annotation.evidence_text ?? ''}\u0000${annotation.comment}\u0000${annotation.suggestion ?? ''}`
-    if (!unique.has(key)) unique.set(key, annotation)
-  }
   const severityRank = { high: 0, medium: 1, low: 2 }
-  const ordered = [...unique.values()].sort((left, right) => {
-    const offsetDifference = (left.start_offset ?? Number.MAX_SAFE_INTEGER) - (right.start_offset ?? Number.MAX_SAFE_INTEGER)
+  const sourceAnnotations = reportDeepAnalysis.value?.status === 'completed'
+    ? reportDeepAnalysis.value.annotations
+    : isLegacyReport.value
+      ? reviewBatch.value?.reviews.flatMap((review) => review.annotations ?? []) ?? []
+      : []
+  const ordered = deduplicateReportAnnotations(
+    sourceAnnotations,
+    reportEssayText.value,
+  ).sort((left, right) => {
+    const leftStart = annotationRange(reportEssayText.value, left)?.start ?? Number.MAX_SAFE_INTEGER
+    const rightStart = annotationRange(reportEssayText.value, right)?.start ?? Number.MAX_SAFE_INTEGER
+    const offsetDifference = leftStart - rightStart
     if (offsetDifference) return offsetDifference
     return severityRank[left.severity ?? 'low'] - severityRank[right.severity ?? 'low']
   })
@@ -456,6 +588,15 @@ const selectedReportAnnotation = computed(() =>
   ?? null,
 )
 const annotatedEssaySegments = computed<AnnotatedTextSegment[]>(() => buildAnnotatedTextSegments(reportEssayText.value, reportAnnotations.value))
+const reportUsesOcrText = computed(() =>
+  successResult.value?.sources.some((source) => source.source_type === 'image_upload')
+  || Boolean(ocrResult.value || correctionResult.value),
+)
+const displayedAnnotatedEssaySegments = computed<AnnotatedTextSegment[]>(() =>
+  reportUsesOcrText.value
+    ? joinOcrReadingLines(annotatedEssaySegments.value)
+    : annotatedEssaySegments.value,
+)
 const reportStrengths = computed<LearningStrength[]>(() =>
   reviewBatch.value?.final_evaluation?.learning_feedback?.strengths ?? [],
 )
@@ -463,7 +604,11 @@ const reportExcellentExpressions = computed<ExcellentExpression[]>(() =>
   reviewBatch.value?.final_evaluation?.learning_feedback?.excellent_expressions ?? [],
 )
 const reportBasicExpressionIssues = computed<BasicExpressionIssue[]>(() =>
-  reviewBatch.value?.final_evaluation?.learning_feedback?.basic_expression_issues ?? [],
+  reportDeepAnalysis.value?.status === 'completed'
+    ? reportDeepAnalysis.value.basic_expression_issues
+    : isLegacyReport.value
+      ? reviewBatch.value?.final_evaluation?.learning_feedback?.basic_expression_issues ?? []
+      : [],
 )
 const reportSuggestions = computed<ReviewSuggestion[]>(() => {
   const aggregated = reviewBatch.value?.final_evaluation?.learning_feedback?.priority_issues ?? []
@@ -482,20 +627,26 @@ const reportTopSummary = computed(() => {
   if (firstSentence) return firstSentence
   return summary.length > 88 ? `${summary.slice(0, 88).replace(/[，,；;、\s]+$/, '')}……` : summary
 })
+const reportDetailedSummary = computed(() =>
+  reportDeepAnalysis.value?.status === 'completed' && reportDeepAnalysis.value.overall_analysis?.trim()
+    ? reportDeepAnalysis.value.overall_analysis.trim()
+    : reviewBatch.value?.final_evaluation?.summary || '作文已经完成整体评测，可以从最重要的一项建议开始修改。',
+)
 const reportTopStrengths = computed(() => reportStrengths.value.slice(0, 2))
 const reportTopIssues = computed(() => reportSuggestions.value.slice(0, 3))
-const reportConsistency = computed(() => {
+const reportTrustSummary = computed<ReportTrustSummary>(() => {
   const final = reviewBatch.value?.final_evaluation
-  const consistency = final?.consistency
-  if (consistency === 'high') return { label: '高', tone: 'high' }
-  if (consistency === 'medium') return { label: '一般', tone: 'medium' }
-  if (consistency === 'low') return { label: '较低', tone: 'low' }
-  if (final?.confidence !== null && final?.confidence !== undefined) {
-    if (final.confidence >= 0.8) return { label: '高', tone: 'high' }
-    if (final.confidence >= 0.55) return { label: '一般', tone: 'medium' }
-    return { label: '较低', tone: 'low' }
-  }
-  return { label: '暂未提供', tone: 'unknown' }
+  const completed = reportCompletedReviewCount.value
+  const expected = reportExpectedReviewCount.value
+  const disputeDimensions = reportDisputedDimensions.value.map((item) => dimensionLabel(item.dimension))
+  return buildReportTrustSummary({
+    consistency: final?.consistency,
+    disputes: final?.disputes,
+    disputeDimensions,
+    completed,
+    expected,
+    recheckStatus: reportCompletedRecheck.value?.status ?? reportActiveRecheck.value?.status ?? null,
+  })
 })
 const polishOriginalSegments = computed<PolishTextSegment[]>(() =>
   buildPolishSegments(polishResult.value?.original_text ?? '', polishResult.value?.changes ?? [], 'original'),
@@ -601,6 +752,111 @@ function buildAnnotatedTextSegments(text: string, annotations: ReviewAnnotationD
   return segments
 }
 
+function annotationNarrativeTokens(value: string | null): Set<string> {
+  const normalized = (value ?? '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+  if (!normalized) return new Set()
+  const characters = [...normalized]
+  if (characters.length === 1) return new Set(characters)
+  return new Set(characters.slice(0, -1).map((character, index) => `${character}${characters[index + 1]}`))
+}
+
+function annotationNarrativesAreSimilar(left: string | null, right: string | null): boolean {
+  const leftTokens = annotationNarrativeTokens(left)
+  const rightTokens = annotationNarrativeTokens(right)
+  if (!leftTokens.size || !rightTokens.size) return false
+  let overlap = 0
+  for (const token of leftTokens) if (rightTokens.has(token)) overlap += 1
+  return (2 * overlap) / (leftTokens.size + rightTokens.size) >= 0.62
+}
+
+function annotationsDescribeSameFeedback(
+  left: ReviewAnnotationDetail,
+  right: ReviewAnnotationDetail,
+  text: string,
+): boolean {
+  const leftRange = annotationRange(text, left)
+  const rightRange = annotationRange(text, right)
+  if (!leftRange || !rightRange || leftRange.start !== rightRange.start || leftRange.end !== rightRange.end) return false
+  if ((left.kind ?? 'improvement') !== (right.kind ?? 'improvement')) return false
+  if (left.category.trim().toLocaleLowerCase() !== right.category.trim().toLocaleLowerCase()) return false
+  return annotationNarrativesAreSimilar(left.comment, right.comment)
+    || annotationNarrativesAreSimilar(left.suggestion, right.suggestion)
+}
+
+function annotationInformationScore(annotation: ReviewAnnotationDetail): number {
+  const severityScore = annotation.severity === 'high' ? 3 : annotation.severity === 'medium' ? 2 : 1
+  return severityScore + annotation.comment.trim().length + (annotation.suggestion?.trim().length ?? 0) * 1.25
+}
+
+function deduplicateReportAnnotations(annotations: ReviewAnnotationDetail[], text: string): ReviewAnnotationDetail[] {
+  const deduplicated: ReviewAnnotationDetail[] = []
+  for (const annotation of annotations) {
+    const duplicateIndex = deduplicated.findIndex((current) =>
+      annotationsDescribeSameFeedback(current, annotation, text),
+    )
+    if (duplicateIndex < 0) {
+      deduplicated.push(annotation)
+      continue
+    }
+    if (annotationInformationScore(annotation) > annotationInformationScore(deduplicated[duplicateIndex]!)) {
+      deduplicated[duplicateIndex] = annotation
+    }
+  }
+  return deduplicated
+}
+
+function joinOcrReadingLines(segments: AnnotatedTextSegment[]): AnnotatedTextSegment[] {
+  const units = segments.flatMap((segment) =>
+    [...segment.text].map((character) => ({ character, annotations: segment.annotations })),
+  )
+  const normalized: AnnotatedTextSegment[] = []
+
+  const append = (text: string, annotations: ReviewAnnotationDetail[]) => {
+    if (!text) return
+    const previous = normalized[normalized.length - 1]
+    const previousIds = previous?.annotations.map((annotation) => annotation.id).join(',')
+    const annotationIds = annotations.map((annotation) => annotation.id).join(',')
+    if (previous && previousIds === annotationIds) previous.text += text
+    else normalized.push({ text, annotations })
+  }
+
+  let index = 0
+  while (index < units.length) {
+    const unit = units[index]!
+    if (unit.character !== '\r' && unit.character !== '\n') {
+      append(unit.character, unit.annotations)
+      index += 1
+      continue
+    }
+
+    let lineBreakCount = 0
+    while (index < units.length) {
+      const current = units[index]!.character
+      if (current === '\r') {
+        lineBreakCount += 1
+        index += 1
+        if (units[index]?.character === '\n') index += 1
+      } else if (current === '\n') {
+        lineBreakCount += 1
+        index += 1
+      } else {
+        break
+      }
+    }
+
+    if (lineBreakCount >= 2) {
+      append('\n\n', [])
+      continue
+    }
+
+    const previousCharacter = normalized.at(-1)?.text.at(-1) ?? ''
+    const nextCharacter = units[index]?.character ?? ''
+    if (/[A-Za-z0-9]/.test(previousCharacter) && /[A-Za-z0-9]/.test(nextCharacter)) append(' ', [])
+  }
+
+  return normalized
+}
+
 function buildPolishSegments(
   text: string,
   changes: PolishChange[],
@@ -630,14 +886,57 @@ function polishCategoryLabel(category: PolishChange['category']): string {
   return { wording: '用词', sentence: '句子', detail: '细节', structure: '衔接', conventions: '规范' }[category]
 }
 
-function selectReportAnnotation(annotation: ReviewAnnotationDetail, locateText = true): void {
+function reportAnnotationDirection(annotation: ReviewAnnotationDetail): AnnotationDirection {
+  if (annotation.kind === 'strength') return 'keep'
+  if (annotation.severity === 'high' || ['conventions', 'writing_conventions'].includes(annotation.category)) return 'fix'
+  return 'improve'
+}
+
+function reportAnnotationDirectionLabel(annotation: ReviewAnnotationDetail): string {
+  return { keep: '值得保留', improve: '可以更好', fix: '需要修改' }[reportAnnotationDirection(annotation)]
+}
+
+function scrollReportAnnotationDirectory(annotationId: string): void {
+  const target = [...document.querySelectorAll<HTMLElement>('[data-report-directory-id]')]
+    .find((element) => element.dataset.reportDirectoryId === annotationId)
+  const list = target?.closest<HTMLElement>('.annotation-directory-list')
+  if (!target || !list) return
+  const targetRect = target.getBoundingClientRect()
+  const listRect = list.getBoundingClientRect()
+  const top = list.scrollTop + targetRect.top - listRect.top - (list.clientHeight - targetRect.height) / 2
+  list.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
+}
+
+function scrollReportAnnotationText(annotationId: string): void {
+  const target = [...document.querySelectorAll<HTMLElement>('[data-report-annotation-ids]')]
+    .find((element) => element.dataset.reportAnnotationIds?.split(',').includes(annotationId))
+  target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+function emphasizeReportAnnotation(annotationId: string): void {
+  if (reportAnnotationEmphasisTimer) window.clearTimeout(reportAnnotationEmphasisTimer)
+  emphasizedReportAnnotationId.value = annotationId
+  reportAnnotationEmphasisTimer = window.setTimeout(() => {
+    if (emphasizedReportAnnotationId.value === annotationId) emphasizedReportAnnotationId.value = null
+    reportAnnotationEmphasisTimer = null
+  }, 1100)
+}
+
+function selectReportAnnotation(
+  annotation: ReviewAnnotationDetail,
+  origin: AnnotationSelectionOrigin = 'directory',
+): void {
   selectedReportAnnotationId.value = annotation.id
-  if (!locateText) return
   void nextTick(() => {
-    const target = [...document.querySelectorAll<HTMLElement>('[data-report-annotation-ids]')]
-      .find((element) => element.dataset.reportAnnotationIds?.split(',').includes(annotation.id))
-    target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    target?.focus({ preventScroll: true })
+    if (origin === 'text' || origin === 'external') scrollReportAnnotationDirectory(annotation.id)
+    if (origin === 'directory' || origin === 'external') {
+      scrollReportAnnotationText(annotation.id)
+      emphasizeReportAnnotation(annotation.id)
+    }
+    if (origin === 'text' && window.matchMedia('(max-width: 900px)').matches) {
+      document.querySelector<HTMLElement>('.annotation-teacher-note')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
   })
 }
 
@@ -693,6 +992,7 @@ function currentReviewIsRunning(): boolean {
 
 function applyReviewBatch(batch: ReviewBatchResult): void {
   reviewBatch.value = batch
+  if (batch.review_mode) selectedReviewMode.value = batch.review_mode
   reviewResult.value = batch.reviews.find((review) => review.model_provider === 'deepseek') ?? null
   polishResult.value = batch.final_evaluation?.polish ?? null
 }
@@ -702,6 +1002,34 @@ function stopReviewPolling(): void {
     clearInterval(reviewPollingTimer)
     reviewPollingTimer = null
   }
+}
+
+function stopDepthAnalysisPolling(): void {
+  if (depthAnalysisPollingTimer !== null) {
+    clearInterval(depthAnalysisPollingTimer)
+    depthAnalysisPollingTimer = null
+  }
+}
+
+async function refreshDepthAnalysis(): Promise<void> {
+  if (!successResult.value || !reviewBatch.value?.final_evaluation) return
+  try {
+    const response = await apiFetch(`${apiBaseUrl}/api/essays/${successResult.value.id}/reports/latest`)
+    if (!response.ok) throw new Error('暂时无法更新深度分析进度')
+    reviewBatch.value.final_evaluation = await response.json() as FinalEvaluationResult
+    if (!deepAnalysisIsRunning.value) stopDepthAnalysisPolling()
+  } catch (error) {
+    if (deepAnalysisIsRunning.value) {
+      reviewErrorMessage.value = userFacingError(error, '暂时无法更新深度分析进度，任务仍会继续。')
+    }
+  }
+}
+
+function startDepthAnalysisPolling(): void {
+  if (!deepAnalysisIsRunning.value) return
+  stopDepthAnalysisPolling()
+  void refreshDepthAnalysis()
+  depthAnalysisPollingTimer = setInterval(() => { void refreshDepthAnalysis() }, 1800)
 }
 
 async function refreshReviewProgress(): Promise<void> {
@@ -722,6 +1050,7 @@ async function refreshReviewProgress(): Promise<void> {
       if (successResult.value) successResult.value.status = 'evaluated'
       temporaryEssayId.value = null
       setEssayStage('report', currentView.value === 'review')
+      if (deepAnalysisIsRunning.value) startDepthAnalysisPolling()
       await Promise.all([loadHistory(), loadVersionHistory()])
       return
     }
@@ -743,6 +1072,36 @@ function startReviewPolling(): void {
   stopReviewPolling()
   void refreshReviewProgress()
   reviewPollingTimer = setInterval(() => { void refreshReviewProgress() }, 1500)
+}
+
+async function requestDeepAnalysis(): Promise<void> {
+  if (!successResult.value || !reviewBatch.value?.final_evaluation || deepAnalysisIsRunning.value) return
+  isRequestingDeepAnalysis.value = true
+  reviewErrorMessage.value = ''
+  try {
+    const response = await apiFetch(`${apiBaseUrl}/api/essays/${successResult.value.id}/reports/deep-analysis`, {
+      method: 'POST',
+    })
+    const payload = await response.json() as FinalEvaluationResult & { detail?: string }
+    if (!response.ok) throw new Error(safeServerMessage(payload.detail, '深度分析暂时无法开始，请稍后重试'))
+    reviewBatch.value.final_evaluation = payload
+    if (deepAnalysisIsRunning.value) startDepthAnalysisPolling()
+  } catch (error) {
+    reviewErrorMessage.value = userFacingError(error, '深度分析暂时无法开始，请稍后重试')
+  } finally {
+    isRequestingDeepAnalysis.value = false
+  }
+}
+
+function focusDeepFeedback(): void {
+  const target = document.querySelector<HTMLElement>('#annotation-title, #basic-expression-title, #dimension-trust-title')
+  target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function formatEvaluationDuration(value: number | null | undefined): string | null {
+  if (typeof value !== 'number' || value < 0) return null
+  const seconds = Math.max(1, Math.round(value / 1000))
+  return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
 }
 
 function isEssayWorkflowView(view: AppView): view is EssayWorkflowView {
@@ -1025,6 +1384,8 @@ async function submitAuthentication(): Promise<void> {
 }
 
 async function logout(): Promise<void> {
+  stopReviewPolling()
+  stopDepthAnalysisPolling()
   if (authToken.value) await apiFetch(`${apiBaseUrl}/api/auth/logout`, { method: 'POST' })
   localStorage.removeItem('essay_access_token')
   authToken.value = ''
@@ -1080,6 +1441,7 @@ function clearCorrectionResult(): void {
 }
 
 function clearReviewResult(): void {
+  stopDepthAnalysisPolling()
   reviewResult.value = null
   reviewErrorMessage.value = ''
   selectedReportAnnotationId.value = null
@@ -1229,13 +1591,28 @@ function confidencePercent(value: number | null): string {
 
 function disputeLabel(dispute: Record<string, unknown>): string {
   if (dispute.type === 'dimension_disagreement') {
-    return `${dimensionLabel(dispute.dimension as ReviewDimension['dimension'])}分差 ${dispute.spread ?? '--'} 分`
+    return `${dimensionLabel(dispute.dimension as ReviewDimension['dimension'])}的独立评分相差 ${dispute.spread ?? '--'} 分`
   }
   if (dispute.type === 'outlier_score') {
-    const providers = Array.isArray(dispute.providers) ? dispute.providers.join('、') : '某模型'
-    return `${providers} 的总分与中位数偏离较大`
+    return '有一项独立总分与其他判断差异较大，综合时已单独识别'
   }
-  return '检测到需要人工关注的评分差异'
+  return '检测到一处需要进一步核对的判断差异'
+}
+
+function dimensionTrustStateLabel(dimension: DimensionTrustDetail): string {
+  return { consensus: '判断较一致', disputed: '存在差异', unknown: '明细不足' }[dimension.state]
+}
+
+function dimensionTrustDescription(dimension: DimensionTrustDetail): string {
+  if (dimension.state === 'unknown') return '这份报告没有保存足够的独立评分明细。'
+  if (dimension.spread === null) return dimension.state === 'disputed' ? '后端已将这一项标记为分歧。' : '多个独立判断在这一项上较为接近。'
+  return `${dimension.perspectiveCount} 个独立判断的最高与最低评分相差 ${dimension.spread} 分。`
+}
+
+function openReportTrustDetails(): void {
+  if (!reportTrustDetailsRef.value) return
+  reportTrustDetailsRef.value.open = true
+  void nextTick(() => reportTrustDetailsRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
 }
 
 function correctionStatusLabel(status: OcrCorrectionResult['status']): string {
@@ -1243,7 +1620,31 @@ function correctionStatusLabel(status: OcrCorrectionResult['status']): string {
 }
 
 function recheckStatusLabel(status: ReviewRecheck['status']): string {
-  return { pending: '待复核', running: '复核中', completed: '复核完成', skipped: '已跳过', failed: '复核失败' }[status]
+  return { pending: '等待复核', running: '正在复核', completed: '复核已完成', skipped: '未执行额外复核', failed: '复核未完成' }[status]
+}
+
+function recheckStudentSummary(recheck: ReviewRecheck): string {
+  if (recheck.status === 'pending') return '系统已经标出需要进一步确认的差异，复核后会更新这里的结论。'
+  if (recheck.status === 'running') return '正在重新比较独立判断及其评分依据。'
+  if (recheck.status === 'failed') return '本次没有形成有效复核结果，原有综合判断仍保留，可以稍后重试。'
+  if (recheck.status === 'skipped') return '本次综合结论使用已有有效判断，没有加入额外复核结果。'
+  const before = recheck.baseline_evaluation
+  const after = recheck.resolved_evaluation
+  if (before?.overall_score !== null && before?.overall_score !== undefined && after?.overall_score !== null && after?.overall_score !== undefined) {
+    const disputeChange = before.dispute_count !== after.dispute_count
+      ? `，记录的分歧点由 ${before.dispute_count} 个变为 ${after.dispute_count} 个`
+      : `，复核后记录 ${after.dispute_count} 个分歧点`
+    return `复核前综合分为 ${before.overall_score} 分，复核后为 ${after.overall_score} 分${disputeChange}。`
+  }
+  return '复核已经完成，综合结论已结合本次复核结果。'
+}
+
+function technicalProviderLabel(provider?: string): string {
+  return { deepseek: 'DeepSeek', qwen: 'Qwen', doubao: '豆包 / 火山方舟' }[provider ?? ''] ?? provider ?? '未标记来源'
+}
+
+function technicalReviewStatusLabel(status: ModelReviewResult['status']): string {
+  return { pending: '等待返回', running: '正在评审', completed: '已形成有效结果', failed: '未形成有效结果' }[status]
 }
 
 function dimensionLabel(dimension: ReviewDimension['dimension']): string {
@@ -1418,7 +1819,7 @@ async function runReviewBatch(): Promise<void> {
     const response = await apiFetch(`${apiBaseUrl}/api/essays/${successResult.value.id}/reviews/batches`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ providers: ['deepseek', 'qwen', 'doubao'] }),
+      body: JSON.stringify({ providers: ['deepseek', 'qwen', 'doubao'], mode: selectedReviewMode.value }),
     })
     const payload = await response.json() as ReviewBatchResult & { detail?: string }
     if (!response.ok) throw new Error(safeServerMessage(payload.detail, '暂时未能生成有效评测结果，请稍后重试。你的作文已经保留。'))
@@ -1466,6 +1867,7 @@ function newEssay(): void {
   fullScore.value = 100
   essayText.value = ''
   reviewBatch.value = null
+  selectedReviewMode.value = 'quick'
   versionHistory.value = null
   submissionMode.value = 'image'
   pendingRevision.value = null
@@ -1601,6 +2003,8 @@ async function openHistoryEssay(item: Pick<EssayHistoryItem, 'id'>, preferredVie
     if (reviewBatch.value?.status === 'running') {
       isBatchReviewing.value = true
       startReviewPolling()
+    } else if (deepAnalysisIsRunning.value) {
+      startDepthAnalysisPolling()
     }
     ocrRuns.value = {}
     if (paddleOcrResponse.ok) {
@@ -1848,7 +2252,13 @@ watch(reportAnnotations, (annotations) => {
 }, { immediate: true })
 
 onMounted(() => { void restoreSession() })
-onBeforeUnmount(() => { stopReviewPolling(); clearImages(); revokeMediaUrls() })
+onBeforeUnmount(() => {
+  stopReviewPolling()
+  stopDepthAnalysisPolling()
+  if (reportAnnotationEmphasisTimer) window.clearTimeout(reportAnnotationEmphasisTimer)
+  clearImages()
+  revokeMediaUrls()
+})
 </script>
 
 <template>
@@ -2046,7 +2456,7 @@ onBeforeUnmount(() => { stopReviewPolling(); clearImages(); revokeMediaUrls() })
             <div class="report-result-copy">
               <div class="report-result-kicker">
                 <p class="eyebrow">综合结果</p>
-                <span class="report-consistency" :class="`report-consistency--${reportConsistency.tone}`"><ShieldCheck :size="15" />评测一致性：{{ reportConsistency.label }}</span>
+                <button class="report-consistency" :class="`report-consistency--${reportTrustSummary.tone}`" type="button" aria-controls="report-trust-details" @click="openReportTrustDetails"><ShieldCheck :size="15" /><span><strong>{{ reportTrustSummary.headline }}</strong><small>{{ reportTrustSummary.explanation }}</small></span><ChevronDown :size="15" /></button>
               </div>
               <h2 id="performance-title">{{ reportTopSummary }}</h2>
               <p>先解决下面这一项，再继续查看完整反馈。</p>
@@ -2092,9 +2502,71 @@ onBeforeUnmount(() => { stopReviewPolling(); clearImages(); revokeMediaUrls() })
           </div>
         </section>
 
+        <section v-if="reviewBatch?.final_evaluation && !isLegacyReport" class="deep-analysis-entry" :class="`state-${deepAnalysisStatus}`" aria-labelledby="deep-analysis-entry-title">
+          <div>
+            <p class="eyebrow">继续深入</p>
+            <h2 id="deep-analysis-entry-title">{{ deepAnalysisStatus === 'completed' ? '深度反馈已经补充完成' : deepAnalysisStatus === 'failed' ? '深度分析暂时未完成' : deepAnalysisIsRunning ? '核心评测已完成，深度分析仍在继续' : '想进一步了解这篇作文？' }}</h2>
+            <p v-if="deepAnalysisStatus === 'completed'">逐句旁批、全面表达检查和详细评分依据已经加入当前报告。</p>
+            <p v-else-if="deepAnalysisStatus === 'failed'">快速评测结果仍然完整保留，你可以继续阅读或稍后重新尝试。</p>
+            <p v-else-if="deepAnalysisIsRunning">你可以先阅读综合结果，也可以暂时离开这个页面，分析会继续进行。</p>
+            <p v-else>继续生成逐句旁批、全面表达检查和更多评分依据，不会重新评分或重复识别作文。</p>
+            <small v-if="formatEvaluationDuration(reportEvaluationTiming?.quick_duration_ms)">快速评测用时 {{ formatEvaluationDuration(reportEvaluationTiming?.quick_duration_ms) }}<template v-if="formatEvaluationDuration(reportDeepAnalysis?.duration_ms)"> · 深度分析用时 {{ formatEvaluationDuration(reportDeepAnalysis?.duration_ms) }}</template></small>
+          </div>
+          <button v-if="deepAnalysisStatus === 'not_started'" class="primary-button" type="button" :disabled="isRequestingDeepAnalysis" @click="void requestDeepAnalysis()"><LoaderCircle v-if="isRequestingDeepAnalysis" :size="17" class="spin" /><Sparkles v-else :size="17" />{{ isRequestingDeepAnalysis ? '正在开始' : '继续深度评测' }}</button>
+          <div v-else-if="deepAnalysisIsRunning" class="deep-analysis-running" role="status"><LoaderCircle :size="20" class="spin" /><span><strong>深度分析进行中</strong><small>完成后本页会自动补全</small></span></div>
+          <button v-else-if="deepAnalysisStatus === 'completed'" class="secondary-button" type="button" @click="focusDeepFeedback"><BookOpen :size="17" />查看深度反馈</button>
+          <button v-else-if="deepAnalysisStatus === 'failed'" class="secondary-button" type="button" :disabled="isRequestingDeepAnalysis" @click="void requestDeepAnalysis()"><RotateCcw :size="17" />重新尝试</button>
+        </section>
+
+        <details id="report-trust-details" ref="reportTrustDetailsRef" v-if="reviewBatch?.final_evaluation" class="report-deep-dive">
+          <summary><span><ShieldCheck :size="18" /><span><strong>为什么这样评</strong><small>{{ reportTrustSummary.headline }}</small></span></span><ChevronDown :size="18" /></summary>
+          <div class="report-deep-dive-content">
+            <section class="trust-process" aria-labelledby="trust-process-title">
+              <div class="trust-section-heading"><p class="eyebrow">判断过程</p><h3 id="trust-process-title">不是简单平均，而是先比较再综合</h3></div>
+              <ol>
+                <li><span>1</span><div><strong>独立阅读</strong><small>{{ reportExpectedReviewCount ? `${reportCompletedReviewCount} / ${reportExpectedReviewCount} 个评审视角形成有效结果` : '已形成可用的独立判断' }}</small></div></li>
+                <li><span>2</span><div><strong>比较判断</strong><small>按相同评分维度对照各自依据</small></div></li>
+                <li><span>3</span><div><strong>识别共识与分歧</strong><small>{{ reviewBatch.final_evaluation.disputes === null ? '旧报告未保存完整分歧明细' : reportDisputes.length ? `发现 ${reportDisputes.length} 处需要关注的差异` : '未发现达到复核条件的分歧' }}</small></div></li>
+                <li><span>4</span><div><strong>必要时复核</strong><small>{{ reportCompletedRecheck ? '已完成额外复核' : reportActiveRecheck ? recheckStatusLabel(reportActiveRecheck.status) : reportDisputes.length ? '已记录需要复核的差异' : '本次无需额外复核' }}</small></div></li>
+                <li><span>5</span><div><strong>形成综合结论</strong><small>{{ reviewBatch.final_evaluation.overall_score === null ? '已整理现有反馈' : `最终综合评分 ${reviewBatch.final_evaluation.overall_score} 分` }}</small></div></li>
+              </ol>
+            </section>
+
+            <section class="trust-findings" aria-labelledby="trust-findings-title">
+              <div class="trust-section-heading"><p class="eyebrow">一致与分歧</p><h3 id="trust-findings-title">哪些判断接近，哪些地方需要多看一眼</h3></div>
+              <div v-if="reportConsensusDimensions.length || reportDisputedDimensions.length || reportOtherDisputes.length" class="trust-findings-grid">
+                <article v-if="reportConsensusDimensions.length" class="trust-consensus-list"><div><CheckCircle2 :size="18" /><strong>判断较一致</strong></div><ul><li v-for="dimension in reportConsensusDimensions" :key="dimension.dimension"><span>{{ dimensionLabel(dimension.dimension) }}</span><small>{{ dimensionTrustDescription(dimension) }}</small></li></ul></article>
+                <article v-if="reportDisputedDimensions.length || reportOtherDisputes.length" class="trust-dispute-list"><div><CircleAlert :size="18" /><strong>判断存在差异</strong></div><ul><li v-for="dimension in reportDisputedDimensions" :key="dimension.dimension"><span>{{ dimensionLabel(dimension.dimension) }}</span><small>{{ dimensionTrustDescription(dimension) }}</small></li><li v-for="(dispute, index) in reportOtherDisputes" :key="`other-${index}`"><span>综合评分</span><small>{{ disputeLabel(dispute) }}</small></li></ul></article>
+              </div>
+              <p v-else class="trust-data-fallback">这份报告没有保存完整的独立评分差异明细，因此这里只展示已有综合结果，不补充推测性结论。</p>
+            </section>
+
+            <section v-if="reportDimensionTrustDetails.length && deepAnalysisAvailable" class="dimension-trust-evidence" aria-labelledby="dimension-trust-title">
+              <div class="trust-section-heading"><p class="eyebrow">评分依据</p><h3 id="dimension-trust-title">每一项分数，都可以继续查看判断依据</h3></div>
+              <div>
+                <details v-for="dimension in reportDimensionTrustDetails" :key="dimension.dimension" class="dimension-trust-item">
+                  <summary><span><strong>{{ dimensionLabel(dimension.dimension) }}</strong><small>{{ dimensionTrustStateLabel(dimension) }}</small></span><span>{{ dimension.score }} / {{ dimension.maxScore }}<ChevronDown :size="15" /></span></summary>
+                  <ul v-if="dimension.perspectives.length"><li v-for="perspective in dimension.perspectives" :key="`${dimension.dimension}-${perspective.label}`"><span>{{ perspective.label }}<template v-if="perspective.score !== null && perspective.maxScore !== null"> · {{ perspective.score }} / {{ perspective.maxScore }}</template></span><p>{{ perspective.rationale }}</p><blockquote v-if="perspective.evidence"><strong>原文依据</strong>“{{ perspective.evidence.quote }}”<small>{{ perspective.evidence.rationale }}</small></blockquote></li></ul>
+                  <p v-else>这份报告没有保存该维度的独立评语明细。</p>
+                </details>
+              </div>
+            </section>
+
+            <section v-if="reviewBatch.rechecks.length" class="recheck-panel student-recheck-panel" aria-labelledby="student-recheck-title">
+              <div class="trust-section-heading"><p class="eyebrow">复核结果</p><h3 id="student-recheck-title">发现明显差异时，再独立确认一次</h3></div>
+              <article v-for="recheck in reviewBatch.rechecks" :key="recheck.id"><div><span>{{ recheckStatusLabel(recheck.status) }}</span></div><p>{{ recheckStudentSummary(recheck) }}</p><button v-if="recheck.status === 'pending' || recheck.status === 'failed'" class="secondary-button" type="button" :disabled="isBusy" @click="void runRecheck(recheck)">{{ isRechecking ? '正在复核' : '进行复核' }}</button></article>
+            </section>
+
+            <details v-if="deepAnalysisAvailable" class="report-technical-details">
+              <summary><span>评测来源与技术说明</span><ChevronDown :size="16" /></summary>
+              <div><p>下面保留本次真实评审来源，供需要进一步核对的用户查看。</p><section class="independent-review-details"><div><article v-for="review in reviewBatch.reviews" :key="review.id"><div><strong>{{ technicalProviderLabel(review.model_provider) }}</strong><span>{{ technicalReviewStatusLabel(review.status) }}</span></div><small v-if="review.model_name">{{ review.model_name }}</small><b>{{ review.overall_score === null ? '暂无有效分数' : `${review.overall_score} 分` }}</b><p>{{ review.status === 'completed' ? (review.summary || '已形成结构化评审结果。') : '本次没有形成可用于综合的结构化结果。' }}</p></article></div></section></div>
+            </details>
+          </div>
+        </details>
+
         <section v-if="reviewBatch?.final_evaluation" class="overall-feedback" aria-labelledby="overall-feedback-title">
           <div class="report-section-heading"><div><p class="eyebrow">完整总评</p><h2 id="overall-feedback-title">进一步理解这篇作文</h2></div></div>
-          <div class="overall-summary"><span><Sparkles :size="22" /></span><p>{{ reviewBatch.final_evaluation.summary || '作文已经完成整体评测，可以从下面最重要的一项建议开始修改。' }}</p></div>
+          <div class="overall-summary"><span><Sparkles :size="22" /></span><p>{{ reportDetailedSummary }}</p></div>
         </section>
 
         <section v-if="reportStrengths.length || reportExcellentExpressions.length" class="learning-highlights" aria-labelledby="learning-highlights-title">
@@ -2121,22 +2593,22 @@ onBeforeUnmount(() => { stopReviewPolling(); clearImages(); revokeMediaUrls() })
           <ol class="basic-issue-list"><li v-for="(issue, index) in reportBasicExpressionIssues" :key="`${issue.quote}-${issue.comment}-${index}`"><span>{{ basicIssueTypeLabel(issue.issue_type) }}</span><div><blockquote>“{{ issue.quote }}”</blockquote><strong>{{ issue.comment }}</strong><p>{{ issue.suggestion }}</p></div><button v-if="reportAnnotations.some((annotation) => annotation.evidence_text === issue.quote)" class="text-button" type="button" @click="locateBasicExpressionIssue(issue)">查看原文</button></li></ol>
         </section>
 
-        <section v-if="reportEssayText" class="annotation-learning" aria-labelledby="annotation-title">
+        <section v-if="reportEssayText && deepAnalysisAvailable" class="annotation-learning" aria-labelledby="annotation-title">
           <div class="report-section-heading"><div><p class="eyebrow">逐句旁批</p><h2 id="annotation-title">每一条反馈，都能回到原文</h2><p>所有有批注的句子都已标记。选择一条旁批，即可聚焦查看对应原文；手写作文还可以回到原稿位置。</p></div><span>逐句旁批 · 共 {{ reportAnnotations.length }} 条</span></div>
           <div class="annotation-workspace">
             <article class="annotated-essay-reader">
               <div class="essay-reader-heading"><strong>作文原文</strong><span><i></i>有逐句旁批的文字</span></div>
-              <div class="annotated-essay-copy"><template v-for="(segment, index) in annotatedEssaySegments" :key="`${index}-${segment.text.slice(0, 8)}`"><button v-if="segment.annotations.length" type="button" class="inline-annotation" :class="{ active: segment.annotations.some((annotation) => selectedReportAnnotation?.id === annotation.id), grouped: segment.annotations.length > 1, strength: segment.annotations.some((annotation) => annotation.kind === 'strength') }" :data-report-annotation-ids="segment.annotations.map((annotation) => annotation.id).join(',')" :aria-label="`查看${segment.annotations.length > 1 ? `${segment.annotations.length} 条` : ''}逐句旁批：${segment.text}`" @click="selectReportAnnotation(segment.annotations.find((annotation) => annotation.id === selectedReportAnnotation?.id) ?? segment.annotations[0], false)">{{ segment.text }}<sup v-if="segment.annotations.length > 1">{{ segment.annotations.length }}</sup></button><span v-else>{{ segment.text }}</span></template></div>
+              <div class="annotated-essay-copy"><template v-for="(segment, index) in displayedAnnotatedEssaySegments" :key="`${index}-${segment.text.slice(0, 8)}`"><button v-if="segment.annotations.length" type="button" class="inline-annotation" :class="{ active: segment.annotations.some((annotation) => selectedReportAnnotation?.id === annotation.id), locating: segment.annotations.some((annotation) => emphasizedReportAnnotationId === annotation.id), grouped: segment.annotations.length > 1, strength: segment.annotations.some((annotation) => annotation.kind === 'strength'), fix: segment.annotations.some((annotation) => reportAnnotationDirection(annotation) === 'fix') }" :data-report-annotation-ids="segment.annotations.map((annotation) => annotation.id).join(',')" :aria-pressed="segment.annotations.some((annotation) => selectedReportAnnotation?.id === annotation.id)" :aria-label="segment.annotations.length > 1 ? `此处有 ${segment.annotations.length} 条逐句旁批：${segment.text}` : `查看逐句旁批：${segment.text}`" @click="selectReportAnnotation(segment.annotations.find((annotation) => annotation.id === selectedReportAnnotation?.id) ?? segment.annotations[0]!, 'text')">{{ segment.text }}<sup v-if="segment.annotations.length > 1" :title="`此处有 ${segment.annotations.length} 条不同角度的反馈`">{{ segment.annotations.length }}</sup></button><span v-else>{{ segment.text }}</span></template></div>
             </article>
             <aside class="annotation-sidebar" aria-label="逐句旁批列表与详情">
               <template v-if="selectedReportAnnotation">
                 <nav class="annotation-directory" aria-label="全部逐句旁批">
                   <div class="annotation-directory-heading"><strong>逐句旁批</strong><span>共 {{ reportAnnotations.length }} 条</span></div>
-                  <ol class="annotation-directory-list"><li v-for="(annotation, index) in reportAnnotations" :key="annotation.id"><button type="button" :class="{ active: selectedReportAnnotation.id === annotation.id, strength: annotation.kind === 'strength' }" @click="selectReportAnnotation(annotation)"><span class="annotation-directory-number">{{ index + 1 }}</span><span class="annotation-directory-copy"><small>{{ annotationTypeLabel(annotation) }}</small><strong>“{{ annotationPreview(annotation) }}”</strong></span><ChevronRight :size="15" aria-hidden="true" /></button></li></ol>
+                  <ol class="annotation-directory-list"><li v-for="(annotation, index) in reportAnnotations" :key="annotation.id"><button type="button" :class="[`direction-${reportAnnotationDirection(annotation)}`, { active: selectedReportAnnotation.id === annotation.id }]" :data-report-directory-id="annotation.id" :aria-current="selectedReportAnnotation.id === annotation.id ? 'true' : undefined" @click="selectReportAnnotation(annotation, 'directory')"><span class="annotation-directory-number">{{ index + 1 }}</span><span class="annotation-directory-copy"><small>{{ reportAnnotationDirectionLabel(annotation) }} · {{ annotationTypeLabel(annotation) }}</small><strong>“{{ annotationPreview(annotation) }}”</strong></span><ChevronRight :size="15" aria-hidden="true" /></button></li></ol>
                 </nav>
-                <article class="annotation-teacher-note">
-                  <div class="annotation-note-heading"><span>{{ annotationTypeLabel(selectedReportAnnotation) }}</span><small>{{ selectedReportAnnotation.kind === 'strength' ? '值得保留' : selectedReportAnnotation.severity === 'high' ? '优先关注' : '逐句反馈' }}</small></div>
-                  <dl class="annotation-detail"><div><dt>原句</dt><dd>“{{ selectedReportAnnotation.evidence_text || '对应原文' }}”</dd></div><div><dt>{{ selectedReportAnnotation.kind === 'strength' ? '亮点说明' : '问题说明' }}</dt><dd>{{ selectedReportAnnotation.comment }}</dd></div><div v-if="selectedReportAnnotation.suggestion"><dt>{{ selectedReportAnnotation.kind === 'strength' ? '保留建议' : '参考修改' }}</dt><dd>{{ selectedReportAnnotation.suggestion }}</dd></div></dl>
+                <article class="annotation-teacher-note" :class="`direction-${reportAnnotationDirection(selectedReportAnnotation)}`" aria-live="polite">
+                  <div class="annotation-note-heading"><span>{{ reportAnnotationDirectionLabel(selectedReportAnnotation) }}</span><small>{{ annotationTypeLabel(selectedReportAnnotation) }} · 第 {{ reportAnnotations.findIndex((annotation) => annotation.id === selectedReportAnnotation.id) + 1 }} 条</small></div>
+                  <dl class="annotation-detail"><div><dt>原句</dt><dd>“{{ selectedReportAnnotation.evidence_text || '对应原文' }}”</dd></div><div><dt>{{ selectedReportAnnotation.kind === 'strength' ? '好在哪里' : '这里怎么看' }}</dt><dd>{{ selectedReportAnnotation.comment }}</dd></div><div v-if="selectedReportAnnotation.suggestion"><dt>{{ selectedReportAnnotation.kind === 'strength' ? '为什么值得保留' : '可以怎么改' }}</dt><dd>{{ selectedReportAnnotation.suggestion }}</dd></div></dl>
                   <p v-if="!canLocateReportAnnotation(selectedReportAnnotation)" class="annotation-location-note">这条反馈暂未能精确标记到原文位置，请结合上方原句查看。</p>
                   <button v-if="selectedReportAnnotation.ocr_block_id" class="secondary-button annotation-source-button" type="button" @click="void openAnnotation(selectedReportAnnotation)"><Images :size="16" />查看手写原稿位置</button>
                 </article>
@@ -2164,7 +2636,6 @@ onBeforeUnmount(() => { stopReviewPolling(); clearImages(); revokeMediaUrls() })
         </section>
 
         <div v-if="reviewBatch?.final_evaluation" class="report-next-actions"><div><p class="eyebrow">下一步</p><h2>趁反馈还清晰，完成一次修改</h2><p>修改稿完成评测后，会作为同一篇作文的新版本进入作品档案。</p></div><div><button class="primary-button" type="button" @click="reviseEssay()"><Edit3 :size="18" />修改作文</button><button class="secondary-button" type="button" :disabled="isBatchReviewing" @click="void retryReviewBatch"><RotateCcw :size="17" />{{ isBatchReviewing ? '正在再次评测' : '再次评测' }}</button></div></div>
-        <details v-if="reviewBatch?.final_evaluation" class="report-deep-dive"><summary>查看评分分歧、复核与可信度依据<ChevronDown :size="18" /></summary><div class="report-deep-dive-content"><section v-if="reportConfidenceFactors.length" class="confidence-explainer"><div><Gauge :size="18" /><strong>可信度依据</strong></div><article v-for="factor in reportConfidenceFactors" :key="factor.factor"><div><strong>{{ factor.label }}</strong><span>{{ confidencePercent(factor.value) }}</span></div><p>{{ factor.detail }}</p></article></section><div v-if="reviewBatch.final_evaluation.disputes?.length" class="report-disputes"><CircleAlert :size="18" /><div><strong>评分分歧</strong><p v-for="(dispute, index) in reviewBatch.final_evaluation.disputes" :key="index">{{ disputeLabel(dispute) }}</p></div></div><section class="independent-review-details"><p class="eyebrow">三路独立观点</p><div><article v-for="(review, index) in reviewBatch.reviews" :key="review.id"><span>独立评审 {{ index + 1 }}</span><strong>{{ review.overall_score ?? '--' }} 分</strong><p>{{ review.summary || review.error_message || '暂无结果' }}</p></article></div></section><section v-if="reviewBatch.rechecks.length" class="recheck-panel"><strong>必要复核</strong><article v-for="recheck in reviewBatch.rechecks" :key="recheck.id"><div><span>{{ recheckStatusLabel(recheck.status) }}</span><p>{{ recheck.trigger_reason }}</p></div><p>{{ recheck.result_summary || '分歧达到阈值时，可发起独立复核。' }}</p><button v-if="recheck.status === 'pending' || recheck.status === 'failed'" class="secondary-button" type="button" :disabled="isBusy" @click="void runRecheck(recheck)">{{ isRechecking ? '正在复核' : '开始复核' }}</button></article></section></div></details>
       </section>
       <div v-show="currentView === 'compose'" class="page-heading">
         <div>
@@ -2471,8 +2942,12 @@ onBeforeUnmount(() => { stopReviewPolling(); clearImages(); revokeMediaUrls() })
 
         <ol class="review-flow"><li class="active"><span>1</span><div><strong>分别阅读作文</strong><p>从内容、结构和表达等角度独立理解这篇作文。</p></div></li><li><span>2</span><div><strong>对照不同判断</strong><p>找出一致的看法，也留意值得再次确认的地方。</p></div></li><li><span>3</span><div><strong>生成综合反馈</strong><p>必要时进一步确认，再整理成容易理解的结果。</p></div></li></ol>
         <div v-if="!isBatchReviewing" class="review-start-panel">
-          <div><ShieldCheck :size="24" /><span><strong>作文内容已准备好</strong><small>点击开始后，系统会正式进行多角度评阅。</small></span></div>
-          <div class="review-start-actions"><button class="primary-button" type="button" :disabled="!canRequestReview" @click="runReviewBatch"><RotateCcw v-if="reviewErrorMessage" :size="18" /><ScanText v-else :size="18" />{{ reviewErrorMessage ? '重新尝试评测' : '开始评测' }}</button></div>
+          <div class="review-mode-heading"><ShieldCheck :size="24" /><span><strong>选择这次评测方式</strong><small>快速评测默认推荐，之后仍可在同一份报告中继续深度分析。</small></span></div>
+          <div class="review-mode-options" role="radiogroup" aria-label="评测方式">
+            <button type="button" role="radio" :aria-checked="selectedReviewMode === 'quick'" :class="{ active: selectedReviewMode === 'quick' }" @click="selectedReviewMode = 'quick'"><span><strong>快速评测</strong><em>推荐</em></span><p>快速了解分数、主要优点、核心问题和修改方向。</p><small>预计约 20–40 秒</small></button>
+            <button type="button" role="radio" :aria-checked="selectedReviewMode === 'deep'" :class="{ active: selectedReviewMode === 'deep' }" @click="selectedReviewMode = 'deep'"><span><strong>深度评测</strong></span><p>核心报告完成后，继续生成逐句旁批、全面表达检查和更多依据。</p><small>核心结果会优先开放</small></button>
+          </div>
+          <div class="review-start-actions"><button class="primary-button" type="button" :disabled="!canRequestReview" @click="runReviewBatch"><RotateCcw v-if="reviewErrorMessage" :size="18" /><ScanText v-else :size="18" />{{ reviewErrorMessage ? '重新尝试评测' : selectedReviewMode === 'deep' ? '开始深度评测' : '开始快速评测' }}</button></div>
         </div>
         <section v-if="isBatchReviewing" class="review-progress-panel" role="status" aria-live="polite">
           <div class="review-progress-heading"><div><p class="eyebrow">评测进度</p><strong>正在评测《{{ successResult.title || '本次作文' }}》</strong><p>{{ reviewProgress.message }}</p></div><b>{{ reviewProgress.percent }}%</b></div>
