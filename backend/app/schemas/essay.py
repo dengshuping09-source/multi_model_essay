@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -79,6 +80,78 @@ class EssayHistoryResponse(BaseModel):
     items: list[EssayHistoryItemResponse]
 
 
+class GrowthDimensionPointResponse(BaseModel):
+    essay_id: UUID
+    root_essay_id: UUID
+    version_no: int
+    title: str | None
+    evaluated_at: datetime
+    score: float
+    max_score: float
+
+
+class GrowthDimensionTrendResponse(BaseModel):
+    dimension: str
+    direction: Literal["improving", "steady", "declining", "insufficient"]
+    change: float | None
+    recent_change: float | None
+    points: list[GrowthDimensionPointResponse]
+
+
+class GrowthIssuePatternResponse(BaseModel):
+    category: str
+    issue_type: str | None
+    label: str
+    work_count: int
+    occurrence_count: int
+    latest_statement: str
+
+
+class GrowthImprovedIssueResponse(BaseModel):
+    essay_id: UUID
+    title: str | None
+    previous_version_no: int
+    current_version_no: int
+    category: str
+    issue_type: str | None
+    label: str
+    statement: str
+    explanation: str
+    evaluated_at: datetime
+
+
+class GrowthRevisionSummaryResponse(BaseModel):
+    comparison_count: int
+    improved_count: int
+    steady_count: int
+    declined_count: int
+    most_improved_dimension: str | None
+    most_improved_dimension_count: int
+
+
+class GrowthLatestEvaluationResponse(BaseModel):
+    essay_id: UUID
+    title: str | None
+    evaluated_at: datetime
+    overall_score: float | None
+    dimension_scores: list[dict]
+
+
+class EssayGrowthSummaryResponse(BaseModel):
+    evaluation_count: int
+    work_count: int
+    has_long_term_insights: bool
+    additional_works_needed: int
+    latest: GrowthLatestEvaluationResponse | None
+    recent_improvement_dimension: str | None
+    practice_dimension: str | None
+    practice_issue: GrowthIssuePatternResponse | None
+    dimension_trends: list[GrowthDimensionTrendResponse]
+    recurring_issues: list[GrowthIssuePatternResponse]
+    improved_issues: list[GrowthImprovedIssueResponse]
+    revision_summary: GrowthRevisionSummaryResponse
+
+
 class EssayVersionSummaryResponse(BaseModel):
     id: UUID
     root_essay_id: UUID
@@ -96,6 +169,45 @@ class EssayVersionHistoryResponse(BaseModel):
     root_essay_id: UUID
     current_essay_id: UUID
     items: list[EssayVersionSummaryResponse]
+
+
+class EssayVersionIssueResponse(BaseModel):
+    category: str
+    issue_type: str | None
+    statement: str
+    evidence_text: str | None
+    suggestion: str | None
+    source: str
+
+
+class EssayVersionIssueChangeResponse(BaseModel):
+    previous: EssayVersionIssueResponse | None
+    current: EssayVersionIssueResponse | None
+    basis: Literal["matched_feedback", "changed_evidence", "new_feedback"]
+    explanation: str
+
+
+class EssayVersionDimensionChangeResponse(BaseModel):
+    dimension: str
+    before: float
+    after: float
+    change: float
+
+
+class EssayVersionComparisonResponse(BaseModel):
+    root_essay_id: UUID
+    previous_essay_id: UUID
+    current_essay_id: UUID
+    previous_version_no: int
+    current_version_no: int
+    previous_score: float | None
+    current_score: float | None
+    score_change: float | None
+    outcome: Literal["improved", "steady", "declined", "unavailable"]
+    dimension_changes: list[EssayVersionDimensionChangeResponse]
+    improved_issues: list[EssayVersionIssueChangeResponse]
+    persistent_issues: list[EssayVersionIssueChangeResponse]
+    new_issues: list[EssayVersionIssueChangeResponse]
 
 
 class OcrBlockResponse(BaseModel):

@@ -26,7 +26,7 @@ from app.modules.reviews.contracts import (
     ImprovementSuggestion,
     ReviewAnnotation,
 )
-from app.modules.reviews.deepseek import ProviderReviewResult
+from app.modules.reviews.deepseek import DeepSeekResponseFormatError, ProviderReviewResult
 from app.modules.reviews.deep_analysis import (
     DeepAnalysisGenerationError,
     DeepAnalysisProviderResult,
@@ -604,6 +604,182 @@ def test_two_completed_views_do_not_wait_for_one_abnormally_slow_provider(
                 assert sum(review["status"] == "failed" for review in batch["reviews"]) == 1
                 assert batch["final_evaluation"]["overall_score"] == 86
                 assert batch["final_evaluation"]["aggregation_config"]["confidence_factors"]["completed_provider_count"] == 2
+        finally:
+            await cleanup_records(essay_ids, user_id)
+            await close_test_database()
+
+    asyncio.run(scenario())
+
+
+def test_one_of_three_views_does_not_create_a_formal_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure_test_database(tmp_path)
+
+    class InvalidReviewProvider(FakeReviewProvider):
+        async def review(self, _: str, __: object) -> ProviderReviewResult:
+            raise DeepSeekResponseFormatError("invalid optional-provider result")
+
+    def insufficient_registry() -> dict[str, FakeReviewProvider]:
+        return {
+            "deepseek": FakeReviewProvider("deepseek"),
+            "qwen": InvalidReviewProvider("qwen"),
+            "doubao": InvalidReviewProvider("doubao"),
+        }
+
+    monkeypatch.setattr(settings, "model_review_max_retries", 0)
+    monkeypatch.setattr(
+        "app.modules.reviews.service.get_review_provider_registry", insufficient_registry
+    )
+
+    async def scenario() -> None:
+        essay_ids: list[UUID] = []
+        user_id: UUID | None = None
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                user_id = await authenticate(client)
+                upload = await client.post("/api/essays", data={"original_text": ESSAY_TEXT})
+                essay_id = UUID(upload.json()["id"])
+                essay_ids.append(essay_id)
+
+                started = await client.post(
+                    f"/api/essays/{essay_id}/reviews/batches",
+                    json={"providers": ["deepseek", "qwen", "doubao"], "mode": "quick"},
+                )
+                assert started.status_code == 202
+                batch = (await client.get(f"/api/essays/{essay_id}/reviews/batches")).json()[0]
+                assert batch["status"] == "failed"
+                assert sum(item["status"] == "completed" for item in batch["reviews"]) == 1
+                assert batch["final_evaluation"] is None
+                report = await client.get(f"/api/essays/{essay_id}/reports/latest")
+                assert report.status_code == 404
+        finally:
+            await cleanup_records(essay_ids, user_id)
+            await close_test_database()
+
+    asyncio.run(scenario())
+
+
+def test_completed_revisions_form_one_version_chain_and_compare_real_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure_test_database(tmp_path)
+    active_score = 79.0
+
+    class VersionReviewProvider(FakeReviewProvider):
+        async def review(self, _: str, __: object) -> ProviderReviewResult:
+            output = structured_review()
+            per_dimension = active_score / len(output.dimension_scores)
+            for dimension in output.dimension_scores:
+                dimension.score = per_dimension
+            output.overall_score = active_score
+            return ProviderReviewResult(
+                output=output,
+                provider_response_id=f"version-{self.key}-{active_score}",
+                model_name=self.model_name,
+                usage={"total_tokens": 80},
+            )
+
+    def version_registry() -> dict[str, VersionReviewProvider]:
+        return {
+            key: VersionReviewProvider(key, score=active_score)
+            for key in ("deepseek", "qwen", "doubao")
+        }
+
+    monkeypatch.setattr(
+        "app.modules.reviews.service.get_review_provider_registry", version_registry
+    )
+
+    async def evaluate(client: AsyncClient, essay_id: UUID) -> None:
+        response = await client.post(
+            f"/api/essays/{essay_id}/reviews/batches",
+            json={"providers": ["deepseek", "qwen", "doubao"], "mode": "quick"},
+        )
+        assert response.status_code == 202, response.text
+        batch_payload: dict[str, object] | None = None
+        for _ in range(100):
+            batches = await client.get(f"/api/essays/{essay_id}/reviews/batches")
+            assert batches.status_code == 200, batches.text
+            batch_payload = batches.json()[0]
+            if batch_payload["status"] != "running":
+                break
+            await asyncio.sleep(0.05)
+        assert batch_payload is not None
+        assert batch_payload["status"] == "completed", batch_payload
+        assert batch_payload["final_evaluation"] is not None
+        report = await client.get(f"/api/essays/{essay_id}/reports/latest")
+        assert report.status_code == 200, report.text
+
+    async def scenario() -> None:
+        nonlocal active_score
+        essay_ids: list[UUID] = []
+        user_id: UUID | None = None
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                user_id = await authenticate(client)
+                first = await client.post(
+                    "/api/essays",
+                    data={"title": "版本闭环", "original_text": "第一版正文，细节还不够完整。"},
+                )
+                first_id = UUID(first.json()["id"])
+                essay_ids.append(first_id)
+                await evaluate(client, first_id)
+
+                second = await client.post(
+                    "/api/essays",
+                    data={
+                        "title": "版本闭环",
+                        "original_text": "第二版正文，补充了人物动作和环境细节。",
+                        "parent_essay_id": str(first_id),
+                    },
+                )
+                assert second.status_code == 201, second.text
+                second_id = UUID(second.json()["id"])
+                essay_ids.append(second_id)
+                before_second_review = await client.get(f"/api/essays/{second_id}/versions")
+                assert [item["id"] for item in before_second_review.json()["items"]] == [
+                    str(first_id)
+                ]
+
+                active_score = 83.0
+                await evaluate(client, second_id)
+                comparison = await client.get(
+                    f"/api/essays/{second_id}/versions/comparison"
+                )
+                assert comparison.status_code == 200, comparison.text
+                assert comparison.json()["previous_score"] == 79
+                assert comparison.json()["current_score"] == 83
+                assert comparison.json()["outcome"] == "improved"
+
+                third = await client.post(
+                    "/api/essays",
+                    data={
+                        "title": "版本闭环",
+                        "original_text": "第三版正文，再次调整了段落衔接。",
+                        "parent_essay_id": str(second_id),
+                    },
+                )
+                third_id = UUID(third.json()["id"])
+                essay_ids.append(third_id)
+                active_score = 80.0
+                await evaluate(client, third_id)
+
+                unfinished = await client.post(
+                    "/api/essays",
+                    data={
+                        "title": "版本闭环",
+                        "original_text": "尚未评测的第四版。",
+                        "parent_essay_id": str(third_id),
+                    },
+                )
+                unfinished_id = UUID(unfinished.json()["id"])
+                essay_ids.append(unfinished_id)
+                versions = await client.get(f"/api/essays/{third_id}/versions")
+                version_items = versions.json()["items"]
+                assert [item["version_no"] for item in version_items] == [1, 2, 3]
+                assert all(item["root_essay_id"] == str(first_id) for item in version_items)
+                history = await client.get("/api/essays")
+                assert all(item["id"] != str(unfinished_id) for item in history.json()["items"])
         finally:
             await cleanup_records(essay_ids, user_id)
             await close_test_database()

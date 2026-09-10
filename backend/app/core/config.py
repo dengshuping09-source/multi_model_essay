@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
     deepseek_timeout_seconds: float = 60.0
     deepseek_max_output_tokens: int = 3_000
+    deep_analysis_max_output_tokens: int = 2_400
     qwen_api_key: SecretStr | None = None
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_model: str = "qwen-turbo"
@@ -49,9 +50,9 @@ class Settings(BaseSettings):
     # A complete result may use the other independent reviews when one remote
     # service is slow.  Keep this comfortably above normal response time, but
     # do not turn one unavailable service into a two-minute page-level wait.
-    model_review_timeout_seconds: float = 45.0
+    model_review_timeout_seconds: float = 30.0
     model_review_quorum_grace_seconds: float = 12.0
-    model_review_max_retries: int = 0
+    model_review_max_retries: int = 1
     model_calibration_min_samples: int = 8
     session_ttl_hours: int = 168
     baidu_ocr_api_key: SecretStr | None = None

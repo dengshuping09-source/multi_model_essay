@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+import logging
+from time import perf_counter
 from uuid import uuid4
 from uuid import UUID
 
@@ -34,6 +37,9 @@ from app.modules.essays.storage import (
     save_uploaded_image,
 )
 from app.modules.ocr.image_processing import ImageProcessingResult, analyze_and_preprocess_image
+
+
+logger = logging.getLogger(__name__)
 
 
 class EssaySubmissionError(RuntimeError):
@@ -228,6 +234,7 @@ async def submit_essay(
     full_score: int = 100,
     parent_essay_id: UUID | None = None,
 ) -> Essay:
+    submission_started = perf_counter()
     normalized_title = (title or "").strip() or None
     normalized_text = (original_text or "").strip() or None
     normalized_grade = (grade_level or "").strip() or None
@@ -269,7 +276,11 @@ async def submit_essay(
     processing_results: list[ImageProcessingResult] = []
     processed_paths = []
     try:
+        # Upload streams are saved in request order. CPU-heavy image analysis is
+        # then bounded to two workers so multi-page submissions use available
+        # cores without loading ten full-resolution pages simultaneously.
         for image in images:
+            upload_started = perf_counter()
             stored_image = await save_uploaded_image(
                 upload=image,
                 essay_id=essay_id,
@@ -278,23 +289,68 @@ async def submit_essay(
                 max_image_pixels=settings.max_image_pixels,
             )
             stored_images.append(stored_image)
+
+            logger.info(
+                "essay_image_upload_saved essay_id=%s page=%d bytes=%d width=%d height=%d format=%s elapsed_ms=%d",
+                essay_id,
+                len(stored_images),
+                stored_image.size_bytes,
+                stored_image.width,
+                stored_image.height,
+                stored_image.image_format,
+                round((perf_counter() - upload_started) * 1000),
+            )
+
+        preprocess_semaphore = asyncio.Semaphore(min(2, max(1, len(stored_images))))
+
+        async def preprocess_one(index: int, stored_image: StoredImage) -> ImageProcessingResult:
             processed_path = (
                 settings.upload_dir
                 / str(essay_id)
                 / "processed"
                 / f"{uuid4().hex}.png"
             )
-            result = await to_thread.run_sync(
-                analyze_and_preprocess_image,
-                stored_image.absolute_path,
-                processed_path,
-                settings.max_image_pixels,
-                stored_image.image_format not in {"JPEG", "PNG", "WEBP"}
-                or stored_image.is_animated,
+            preprocessing_started = perf_counter()
+            async with preprocess_semaphore:
+                result = await to_thread.run_sync(
+                    analyze_and_preprocess_image,
+                    stored_image.absolute_path,
+                    processed_path,
+                    settings.max_image_pixels,
+                    stored_image.image_format not in {"JPEG", "PNG", "WEBP"}
+                    or stored_image.is_animated,
+                )
+            logger.info(
+                "essay_image_preprocessing_completed essay_id=%s page=%d status=%s converted=%s elapsed_ms=%d",
+                essay_id,
+                index,
+                result.status.value,
+                result.processed_path is not None,
+                round((perf_counter() - preprocessing_started) * 1000),
             )
-            processing_results.append(result)
-            if result.processed_path:
+            if result.processed_path is not None:
                 processed_paths.append(result.processed_path)
+            return result
+
+        if stored_images:
+            preprocessing_outcomes = await asyncio.gather(
+                *(
+                    preprocess_one(index, stored_image)
+                    for index, stored_image in enumerate(stored_images, start=1)
+                ),
+                return_exceptions=True,
+            )
+            failure = next(
+                (item for item in preprocessing_outcomes if isinstance(item, BaseException)),
+                None,
+            )
+            if failure is not None:
+                raise failure
+            processing_results = [
+                item
+                for item in preprocessing_outcomes
+                if isinstance(item, ImageProcessingResult)
+            ]
 
         sources: list[EssaySource] = []
         next_sequence = 0
@@ -368,6 +424,13 @@ async def submit_essay(
         )
         session.add(essay)
         await session.commit()
+        logger.info(
+            "essay_submission_completed essay_id=%s images=%d has_text=%s elapsed_ms=%d",
+            essay.id,
+            len(stored_images),
+            normalized_text is not None,
+            round((perf_counter() - submission_started) * 1000),
+        )
         return essay
     except UploadValidationError:
         await session.rollback()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any, Protocol
 
 import httpx
@@ -11,9 +12,12 @@ from app.modules.reviews.contracts import EssayReviewOutput, parse_essay_review_
 from app.modules.reviews.deepseek import (
     DeepSeekReviewError,
     DeepSeekResponseFormatError,
+    DeepSeekTimeoutError,
     ProviderReviewResult,
+    ProviderNetworkError,
     QUICK_REVIEW_MAX_OUTPUT_TOKENS,
     SYSTEM_PROMPT,
+    _safe_format_error,
     get_deepseek_client,
     provider_http_error,
 )
@@ -121,19 +125,24 @@ class OpenAiCompatibleProvider:
             "stream": False,
         }
         payload.update(self._extra_request_body)
+        started_at = perf_counter()
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(settings.model_review_timeout_seconds, connect=10.0)
             ) as client:
-                response = await client.post(
+                async with client.stream(
+                    "POST",
                     endpoint,
                     headers={"Authorization": f"Bearer {self._api_key.get_secret_value()}"},
                     json=payload,
-                )
+                ) as response:
+                    first_response_ms = round((perf_counter() - started_at) * 1000)
+                    await response.aread()
         except httpx.TimeoutException as exc:
-            raise ProviderUnavailableError(f"{self.display_name} review request timed out") from exc
+            raise DeepSeekTimeoutError(f"{self.display_name} review request timed out") from exc
         except httpx.HTTPError as exc:
-            raise ProviderUnavailableError(f"{self.display_name} review request could not be completed") from exc
+            raise ProviderNetworkError(f"{self.display_name} review request could not be completed") from exc
+        completed_ms = round((perf_counter() - started_at) * 1000)
         if response.is_error:
             raise provider_http_error(self.display_name, response)
         try:
@@ -144,7 +153,7 @@ class OpenAiCompatibleProvider:
             output = parse_essay_review_output(content)
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
             raise DeepSeekResponseFormatError(
-                f"{self.display_name} returned a review with an invalid structure"
+                _safe_format_error(self.display_name, exc)
             ) from exc
         raw_usage = response_data.get("usage")
         usage = (
@@ -168,6 +177,7 @@ class OpenAiCompatibleProvider:
                 else self.model_name
             ),
             usage=usage,
+            timing={"first_response_ms": first_response_ms, "completed_ms": completed_ms},
         )
 
 

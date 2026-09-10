@@ -3,7 +3,7 @@ from collections import Counter
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,16 +12,20 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import CurrentUser
 from app.core.config import settings
 from app.db.models import Essay, EssaySource, EssayStatus, FinalEvaluation, FinalEvaluationReview, OcrCorrection, OcrPageResult, OcrRun, ReviewStatus, SourceType
-from app.db.session import get_db_session
+from app.db.session import get_db_session, get_session_factory
 from app.modules.essays.service import EssaySubmissionError, discard_temporary_essay, submit_essay
 from app.modules.essays.access import get_owned_essay
+from app.modules.essays.growth import build_growth_summary
 from app.modules.essays.storage import UploadValidationError
+from app.modules.essays.version_comparison import compare_essay_versions
 from app.modules.reviews.service import review_output_from_record
 from app.modules.ocr.service import (
     EssayHasNoImagesError,
     EssayNotFoundError,
     OcrAlreadyRunningError,
     get_latest_ocr_run,
+    mark_ocr_run_failed,
+    retry_ocr_page,
     run_essay_ocr,
 )
 from app.modules.ocr.engine import OcrEngineKey
@@ -34,10 +38,12 @@ from app.modules.ocr.correction_service import (
 )
 from app.schemas.essay import (
     EssaySourceResponse,
+    EssayGrowthSummaryResponse,
     EssayHistoryItemResponse,
     EssayHistoryResponse,
     EssaySubmissionResponse,
     EssayVersionHistoryResponse,
+    EssayVersionComparisonResponse,
     EssayVersionSummaryResponse,
     ImageQualityResponse,
     OcrBlockResponse,
@@ -50,6 +56,19 @@ from app.schemas.essay import (
 )
 
 router = APIRouter(tags=["essays"])
+
+
+async def _execute_ocr_in_background(essay_id: UUID, run_id: UUID, engine: OcrEngineKey) -> None:
+    """Run the persisted OCR job in a fresh request-independent session."""
+    async with get_session_factory()() as background_session:
+        try:
+            await run_essay_ocr(background_session, essay_id, engine_key=engine, run_id=run_id)
+        except Exception:
+            # The run is already persisted, so the client can keep polling and
+            # receive the normal per-page outcome instead of losing its upload.
+            import logging
+            logging.getLogger(__name__).exception("progressive OCR background job failed run_id=%s", run_id)
+            await mark_ocr_run_failed(background_session, run_id)
 
 DEMO_ESSAY = {
     "title": "雨后那盏灯",
@@ -323,6 +342,32 @@ async def list_essays(
     )
 
 
+@router.get("/growth/summary", response_model=EssayGrowthSummaryResponse)
+async def get_growth_summary(
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_db_session),
+) -> EssayGrowthSummaryResponse:
+    essays = list(
+        (
+            await session.scalars(
+                select(Essay)
+                .where(
+                    Essay.author_id == user.id,
+                    Essay.status == EssayStatus.EVALUATED,
+                )
+                .order_by(Essay.created_at.asc(), Essay.version_no.asc())
+                .options(selectinload(Essay.final_evaluations))
+            )
+        ).all()
+    )
+    records = [
+        (essay, final)
+        for essay in essays
+        if (final := _latest_completed_final(essay)) is not None
+    ]
+    return EssayGrowthSummaryResponse.model_validate(build_growth_summary(records))
+
+
 def _top_version_issue(final: FinalEvaluation | None) -> str | None:
     if final is None:
         return None
@@ -405,6 +450,47 @@ async def list_essay_versions(
     )
 
 
+@router.get("/{essay_id}/versions/comparison", response_model=EssayVersionComparisonResponse)
+async def compare_with_previous_version(
+    essay_id: UUID,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_db_session),
+) -> EssayVersionComparisonResponse:
+    current = await session.scalar(
+        select(Essay)
+        .where(
+            Essay.id == essay_id,
+            Essay.author_id == user.id,
+            Essay.status == EssayStatus.EVALUATED,
+        )
+        .options(selectinload(Essay.final_evaluations))
+    )
+    if current is None or current.parent_essay_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="当前作文没有可比较的上一版。",
+        )
+    previous = await session.scalar(
+        select(Essay)
+        .where(
+            Essay.id == current.parent_essay_id,
+            Essay.author_id == user.id,
+            Essay.status == EssayStatus.EVALUATED,
+        )
+        .options(selectinload(Essay.final_evaluations))
+    )
+    current_final = _latest_completed_final(current)
+    previous_final = _latest_completed_final(previous) if previous is not None else None
+    if previous is None or current_final is None or previous_final is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="当前版本缺少完整的新旧评测结果，暂时无法比较。",
+        )
+    return EssayVersionComparisonResponse.model_validate(
+        compare_essay_versions(previous, previous_final, current, current_final)
+    )
+
+
 @router.get("/{essay_id}", response_model=EssaySubmissionResponse)
 async def get_essay(essay_id: UUID, user: CurrentUser, session: AsyncSession = Depends(get_db_session)) -> EssaySubmissionResponse:
     essay = await get_owned_essay(session, essay_id, user)
@@ -435,14 +521,23 @@ async def delete_temporary_essay(
 )
 async def recognize_essay(
     essay_id: UUID,
+    background_tasks: BackgroundTasks,
     engine: OcrEngineKey = Query(default="paddle"),
+    progressive: bool = Query(default=False),
     user: CurrentUser = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> OcrRunResponse:
     if await get_owned_essay(session, essay_id, user) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
     try:
-        run = await run_essay_ocr(session, essay_id, engine_key=engine)
+        if progressive:
+            existing = await get_latest_ocr_run(session, essay_id, engine_key=engine)
+            if existing is not None and existing.status.value == "running":
+                return _ocr_response(existing)
+            run = await run_essay_ocr(session, essay_id, engine_key=engine, defer_execution=True)
+            background_tasks.add_task(_execute_ocr_in_background, essay_id, run.id, engine)
+        else:
+            run = await run_essay_ocr(session, essay_id, engine_key=engine)
     except EssayNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在") from exc
     except EssayHasNoImagesError as exc:
@@ -468,6 +563,24 @@ async def get_essay_ocr(
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="尚无 OCR 识别结果")
     return _ocr_response(run)
+
+
+@router.post("/{essay_id}/ocr/runs/{run_id}/pages/{page_id}/retry", response_model=OcrRunResponse)
+async def retry_essay_ocr_page(
+    essay_id: UUID,
+    run_id: UUID,
+    page_id: UUID,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_db_session),
+) -> OcrRunResponse:
+    if await get_owned_essay(session, essay_id, user) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+    try:
+        return _ocr_response(await retry_ocr_page(session, essay_id, run_id, page_id))
+    except OcrAlreadyRunningError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="这篇作文仍在识别中，请稍后再试") from exc
+    except EssayNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到需要重新识别的页面") from exc
 
 
 @router.get("/{essay_id}/ocr/correction", response_model=OcrCorrectionResponse)

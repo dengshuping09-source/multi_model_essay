@@ -4,7 +4,9 @@ import asyncio
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
+import logging
 from statistics import mean
+from time import perf_counter
 from uuid import UUID, uuid5
 
 from sqlalchemy import func, select
@@ -41,7 +43,13 @@ from app.modules.reviews.deep_analysis import (
 from app.modules.reviews.deepseek import (
     PROMPT_VERSION,
     DeepSeekReviewError,
+    DeepSeekResponseFormatError,
     DeepSeekTimeoutError,
+    ProviderAuthenticationError,
+    ProviderModelOrEndpointError,
+    ProviderNetworkError,
+    ProviderRateLimitError,
+    ProviderServiceError,
     ProviderReviewResult,
     get_deepseek_client,
 )
@@ -50,6 +58,7 @@ from app.modules.reviews.standards import EssayReviewContext, PROMPT_VERSION as 
 
 DEEPSEEK_PROVIDER = "deepseek"
 REVIEW_MODES = {"quick", "deep"}
+logger = logging.getLogger(__name__)
 
 
 class EssayNotFoundForReviewError(RuntimeError):
@@ -178,6 +187,7 @@ def _review_raw_response(result: ProviderReviewResult) -> dict[str, object]:
         "output": result.output.model_dump(mode="json"),
         "provider_response_id": result.provider_response_id,
         "usage": result.usage,
+        "timing": result.timing,
     }
 
 
@@ -389,9 +399,31 @@ async def _persist_provider_output(
 async def _call_provider_with_retry(provider, final_text: FinalEssayText, context: EssayReviewContext):
     last_error: DeepSeekReviewError | None = None
     for retry_count in range(settings.model_review_max_retries + 1):
+        attempt_started = perf_counter()
+        logger.info(
+            "review_provider_request_started provider=%s model=%s attempt=%d essay_chars=%d",
+            provider.key,
+            provider.model_name,
+            retry_count + 1,
+            len(final_text.text),
+        )
         try:
             result = await asyncio.wait_for(
                 provider.review(final_text.text, context), timeout=settings.model_review_timeout_seconds
+            )
+            elapsed_ms = round((perf_counter() - attempt_started) * 1000)
+            timing = dict(result.timing or {})
+            timing["service_elapsed_ms"] = elapsed_ms
+            result = replace(result, timing=timing)
+            logger.info(
+                "review_provider_request_completed provider=%s model=%s attempt=%d elapsed_ms=%d first_response_ms=%s prompt_tokens=%s completion_tokens=%s",
+                provider.key,
+                result.model_name,
+                retry_count + 1,
+                elapsed_ms,
+                timing.get("first_response_ms"),
+                (result.usage or {}).get("prompt_tokens"),
+                (result.usage or {}).get("completion_tokens"),
             )
             return result, retry_count, None
         except asyncio.TimeoutError:
@@ -399,12 +431,67 @@ async def _call_provider_with_retry(provider, final_text: FinalEssayText, contex
         except DeepSeekReviewError as exc:
             last_error = exc
         except asyncio.CancelledError:
+            logger.info(
+                "review_provider_request_cancelled provider=%s attempt=%d",
+                provider.key,
+                retry_count + 1,
+            )
             raise
         except Exception:
             # Keep an unexpected provider-side failure isolated to this one
             # independent review instead of cancelling the entire batch.
             last_error = DeepSeekReviewError(f"{provider.display_name} review request failed")
-    return None, settings.model_review_max_retries, last_error or DeepSeekReviewError("Review failed")
+        elapsed_ms = round((perf_counter() - attempt_started) * 1000)
+        category = _provider_error_category(last_error)
+        will_retry = retry_count < settings.model_review_max_retries and _is_retryable_provider_error(last_error)
+        logger.warning(
+            "review_provider_request_failed provider=%s model=%s attempt=%d elapsed_ms=%d error_category=%s will_retry=%s",
+            provider.key,
+            provider.model_name,
+            retry_count + 1,
+            elapsed_ms,
+            category,
+            will_retry,
+        )
+        if not will_retry:
+            break
+        await asyncio.sleep(0.2 * (retry_count + 1))
+    return None, retry_count, last_error or DeepSeekReviewError("Review failed")
+
+
+def _provider_error_category(error: DeepSeekReviewError | None) -> str:
+    if isinstance(error, DeepSeekTimeoutError):
+        return "timeout"
+    if isinstance(error, DeepSeekResponseFormatError):
+        return "response_format"
+    if isinstance(error, ProviderAuthenticationError):
+        return "authentication"
+    if isinstance(error, ProviderModelOrEndpointError):
+        return "model_or_endpoint"
+    if isinstance(error, ProviderRateLimitError):
+        return "rate_limit"
+    if isinstance(error, ProviderServiceError):
+        return "provider_service"
+    if isinstance(error, ProviderNetworkError):
+        return "network"
+    if isinstance(error, ProviderUnavailableError):
+        return "not_configured"
+    return "unexpected"
+
+
+def _is_retryable_provider_error(error: DeepSeekReviewError | None) -> bool:
+    # Timeouts are deliberately not retried: repeating a full timeout would
+    # double the student's wait. Compact-format drift and short transient
+    # transport/service failures get one bounded recovery attempt.
+    return isinstance(
+        error,
+        (
+            DeepSeekResponseFormatError,
+            ProviderNetworkError,
+            ProviderRateLimitError,
+            ProviderServiceError,
+        ),
+    )
 
 
 async def _calibrated_provider_weights(
@@ -527,6 +614,7 @@ async def execute_started_review_batch(
     create_recheck: bool = True,
 ) -> ReviewBatch:
     """Execute a persisted batch and expose each completed view immediately."""
+    batch_started = perf_counter()
     batch = await get_review_batch(session, batch_id)
     if batch.status is not ReviewStatus.RUNNING:
         return batch
@@ -556,6 +644,13 @@ async def execute_started_review_batch(
         asyncio.create_task(evaluate_one(key, provider)): key
         for key, provider in available
     }
+    logger.info(
+        "quick_review_batch_started batch_id=%s essay_id=%s provider_count=%d essay_chars=%d",
+        batch.id,
+        batch.essay_id,
+        len(tasks),
+        len(final_text.text),
+    )
     pending = set(tasks)
     quorum_deadline: float | None = None
     loop = asyncio.get_running_loop()
@@ -579,6 +674,12 @@ async def execute_started_review_batch(
                 review.status = ReviewStatus.FAILED
                 review.error_message = "评审在核心结果形成后仍未及时完成"
                 review.raw_response = None
+                logger.warning(
+                    "review_provider_quorum_grace_expired batch_id=%s provider=%s grace_seconds=%.1f",
+                    batch.id,
+                    review.model_provider,
+                    settings.model_review_quorum_grace_seconds,
+                )
             await session.commit()
             pending.clear()
             break
@@ -615,10 +716,16 @@ async def execute_started_review_batch(
         if review.status is ReviewStatus.COMPLETED
         and review_output_from_record(review) is not None
     ]
-    batch.status = ReviewStatus.COMPLETED if completed else ReviewStatus.FAILED
-    batch.error_message = None if completed else "暂时未能生成有效评测结果，请稍后重试"
+    minimum_required = min(2, len(batch.requested_providers))
+    has_quorum = len(completed) >= minimum_required
+    batch.status = ReviewStatus.COMPLETED if has_quorum else ReviewStatus.FAILED
+    batch.error_message = (
+        None
+        if has_quorum
+        else "本次独立评审结果不足，暂时不能形成可靠的综合报告，请重新评测"
+    )
     await session.commit()
-    if completed:
+    if has_quorum:
         await _create_final_evaluation(
             session,
             essay,
@@ -627,6 +734,14 @@ async def execute_started_review_batch(
             len(batch.requested_providers),
             create_recheck=create_recheck,
         )
+    logger.info(
+        "quick_review_batch_completed batch_id=%s status=%s completed=%d requested=%d elapsed_ms=%d",
+        batch.id,
+        batch.status.value,
+        len(completed),
+        len(batch.requested_providers),
+        round((perf_counter() - batch_started) * 1000),
+    )
     return await get_review_batch(session, batch.id)
 
 
@@ -659,6 +774,7 @@ async def _create_final_evaluation(
     expected_count: int,
     create_recheck: bool = True,
 ) -> FinalEvaluation:
+    aggregate_started = perf_counter()
     version = int(
         await session.scalar(select(func.coalesce(func.max(FinalEvaluation.version), 0)).where(FinalEvaluation.essay_id == essay.id))
         or 0
@@ -716,6 +832,15 @@ async def _create_final_evaluation(
             "quick_duration_ms": quick_duration_ms,
             "depth_duration_ms": None,
             "total_duration_ms": quick_duration_ms,
+            "providers": {
+                review.model_provider: (
+                    review.raw_response.get("timing")
+                    if isinstance(review.raw_response, dict)
+                    and isinstance(review.raw_response.get("timing"), dict)
+                    else None
+                )
+                for review in completed
+            },
         },
         "deep_analysis": {
             "status": "pending" if batch.review_mode == "deep" else "not_started",
@@ -756,6 +881,14 @@ async def _create_final_evaluation(
     essay.original_text = batch.evaluated_text
     essay.status = EssayStatus.EVALUATED
     await session.commit()
+    logger.info(
+        "quick_review_aggregation_completed batch_id=%s final_id=%s providers=%d disputes=%d elapsed_ms=%d",
+        batch.id,
+        final.id,
+        len(outputs),
+        len(aggregate.disputes),
+        round((perf_counter() - aggregate_started) * 1000),
+    )
     return final
 
 
@@ -951,9 +1084,17 @@ async def execute_deep_analysis(
                 "provider": generated.provider_key,
                 "model": generated.model_name,
             },
+            "provider_timing": generated.timing,
         }
         _with_deep_analysis(final, completed_payload, depth_duration_ms=duration_ms)
         await session.commit()
+        logger.info(
+            "deep_analysis_completed final_id=%s provider=%s elapsed_ms=%d annotations=%d",
+            final.id,
+            generated.provider_key,
+            duration_ms,
+            len(annotations),
+        )
         return final
     except Exception as exc:
         completed_at = datetime.now(timezone.utc)
@@ -977,12 +1118,19 @@ async def execute_deep_analysis(
         )
         _with_deep_analysis(final, failed_payload, depth_duration_ms=duration_ms)
         await session.commit()
+        logger.warning(
+            "deep_analysis_failed final_id=%s elapsed_ms=%d error_category=%s",
+            final.id,
+            duration_ms,
+            type(exc).__name__ if isinstance(exc, DeepAnalysisGenerationError) else "unexpected",
+        )
         return final
 
 
 async def execute_review_recheck(
     session: AsyncSession, essay_id: UUID, recheck_id: UUID
 ) -> ReviewRecheck:
+    recheck_started = perf_counter()
     recheck = await session.scalar(
         select(ReviewRecheck)
         .join(ReviewBatch, ReviewRecheck.batch_id == ReviewBatch.id)
@@ -999,6 +1147,12 @@ async def execute_review_recheck(
     recheck.started_at = datetime.now(timezone.utc)
     recheck.result_summary = "Cross-check review is running."
     await session.commit()
+    logger.info(
+        "review_recheck_started recheck_id=%s essay_id=%s requested=%d",
+        recheck.id,
+        essay_id,
+        len(recheck.requested_providers or []),
+    )
     try:
         recheck_batch = await run_review_batch(
             session,
@@ -1045,6 +1199,12 @@ async def execute_review_recheck(
         recheck.completed_at = datetime.now(timezone.utc)
         recheck.result_summary = str(exc)
         await session.commit()
+    logger.info(
+        "review_recheck_completed recheck_id=%s status=%s elapsed_ms=%d",
+        recheck.id,
+        recheck.status.value,
+        round((perf_counter() - recheck_started) * 1000),
+    )
     return recheck
 
 

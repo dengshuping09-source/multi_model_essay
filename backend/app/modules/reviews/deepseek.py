@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -9,8 +10,8 @@ from pydantic import ValidationError
 from app.core.config import settings
 from app.modules.reviews.contracts import EssayReviewOutput, parse_essay_review_output
 
-PROMPT_VERSION = "essay-review-v3-quick"
-QUICK_REVIEW_MAX_OUTPUT_TOKENS = 1_800
+PROMPT_VERSION = "essay-review-v4-quick-core"
+QUICK_REVIEW_MAX_OUTPUT_TOKENS = 1_200
 
 
 class DeepSeekReviewError(RuntimeError):
@@ -37,35 +38,45 @@ class DeepSeekResponseFormatError(DeepSeekReviewError):
     pass
 
 
+class ProviderNetworkError(DeepSeekReviewError):
+    pass
+
+
+class ProviderRateLimitError(DeepSeekReviewError):
+    pass
+
+
+class ProviderServiceError(DeepSeekReviewError):
+    pass
+
+
 @dataclass(frozen=True)
 class ProviderReviewResult:
     output: EssayReviewOutput
     provider_response_id: str | None
     model_name: str
     usage: dict[str, int] | None
+    timing: dict[str, int] | None = None
 
 
-SYSTEM_PROMPT = """You are an experienced Chinese composition teacher. Review the supplied Chinese essay fairly and constructively.
+SYSTEM_PROMPT = """You are an experienced Chinese composition teacher. Make one independent, concise core judgment of the supplied essay.
 
-Return only one JSON object. The output must satisfy this exact contract:
+Return only one JSON object with this compact contract:
 {
-  "overall_score": 0-100 number equal to the four dimension scores summed,
-  "summary": "concise overall evaluation",
+  "overall_score": "sum of the four scores",
+  "summary": "one concise overall judgment",
   "dimension_scores": [
-    {"dimension":"content_and_ideas","score":0-25,"max_score":25,"rationale":"...","evidence":[{"quote":"exact excerpt from essay","rationale":"...","start_offset":0,"end_offset":2}]},
-    {"dimension":"structure_and_coherence","score":0-25,"max_score":25,"rationale":"...","evidence":[...]},
-    {"dimension":"language_and_expression","score":0-25,"max_score":25,"rationale":"...","evidence":[...]},
-    {"dimension":"writing_conventions","score":0-25,"max_score":25,"rationale":"...","evidence":[...]}
-  ],
-  "annotations": [
-    {"category":"content|structure|language|expression|conventions","kind":"improvement|strength","issue_type":"typo|grammar|punctuation|wording|sentence|other","severity":"low|medium|high","quote":"exact excerpt from essay","start_offset":0,"end_offset":2,"comment":"specific feedback","suggestion":"specific revision advice or why this strength should be kept"}
+    {"dimension":"content_and_ideas","score":0-25,"max_score":25,"rationale":"short reason","evidence":[{"quote":"one exact excerpt","rationale":"short reason"}]},
+    {"dimension":"structure_and_coherence","score":0-25,"max_score":25,"rationale":"short reason","evidence":[]},
+    {"dimension":"language_and_expression","score":0-25,"max_score":25,"rationale":"short reason","evidence":[]},
+    {"dimension":"writing_conventions","score":0-25,"max_score":25,"rationale":"short reason","evidence":[]}
   ],
   "improvement_suggestions": [
-    {"priority":"low|medium|high","category":"content|structure|language|expression|conventions","suggestion":"actionable advice","example_revision":"optional example"}
+    {"priority":"low|medium|high","category":"content|structure|language|expression|conventions","suggestion":"one actionable core issue"}
   ]
 }
 
-Use each required dimension exactly once. Follow the user's stage instruction for output depth. In the quick stage, annotations must be an empty list, each dimension may include at most one necessary evidence item, and only the most important suggestions should be returned. Every evidence quote must be copied exactly from the essay. Offset values are zero-based character offsets; omit both offsets if you cannot provide an exact range. Do not invent facts, author identity, or external context. JSON is required."""
+Use each required dimension exactly once. Keep every rationale short. Return at most one evidence item per dimension and at most three suggestions. Evidence quotes must be copied exactly from the essay. Do not return sentence annotations, a full language scan, polishing, long examples, or technical explanation. Do not invent facts or context. JSON is required."""
 
 
 class DeepSeekReviewClient:
@@ -82,22 +93,28 @@ class DeepSeekReviewClient:
             ],
             "response_format": {"type": "json_object"},
             "max_tokens": min(settings.deepseek_max_output_tokens, QUICK_REVIEW_MAX_OUTPUT_TOKENS),
+            "temperature": 0,
             "stream": False,
         }
-        timeout = httpx.Timeout(settings.deepseek_timeout_seconds, connect=10.0)
+        timeout = httpx.Timeout(settings.model_review_timeout_seconds, connect=10.0)
         endpoint = settings.deepseek_api_url or f"{settings.deepseek_base_url.rstrip('/')}/chat/completions"
+        started_at = perf_counter()
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
+                async with client.stream(
+                    "POST",
                     endpoint,
                     headers={"Authorization": f"Bearer {api_key.get_secret_value()}"},
                     json=payload,
-                )
+                ) as response:
+                    first_response_ms = round((perf_counter() - started_at) * 1000)
+                    await response.aread()
         except httpx.TimeoutException as exc:
             raise DeepSeekTimeoutError("DeepSeek review request timed out") from exc
         except httpx.HTTPError as exc:
-            raise DeepSeekReviewError("DeepSeek review request could not be completed") from exc
+            raise ProviderNetworkError("DeepSeek review request could not be completed") from exc
+        completed_ms = round((perf_counter() - started_at) * 1000)
 
         if response.is_error:
             raise provider_http_error("DeepSeek", response)
@@ -113,7 +130,7 @@ class DeepSeekReviewClient:
             output = parse_essay_review_output(content)
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
             raise DeepSeekResponseFormatError(
-                "DeepSeek returned a review with an invalid structure"
+                _safe_format_error("DeepSeek", exc)
             ) from exc
 
         raw_usage = response_data.get("usage")
@@ -138,6 +155,7 @@ class DeepSeekReviewClient:
                 else settings.deepseek_model
             ),
             usage=usage,
+            timing={"first_response_ms": first_response_ms, "completed_ms": completed_ms},
         )
 
 
@@ -171,7 +189,18 @@ def provider_http_error(provider_name: str, response: httpx.Response) -> DeepSee
             f"{provider_name} model or endpoint was not found (HTTP 404)"
         )
     if status_code == 429:
-        return DeepSeekReviewError(f"{provider_name} request was rate limited (HTTP 429)")
+        return ProviderRateLimitError(f"{provider_name} request was rate limited (HTTP 429)")
     if status_code >= 500:
-        return DeepSeekReviewError(f"{provider_name} provider service failed (HTTP {status_code})")
+        return ProviderServiceError(f"{provider_name} provider service failed (HTTP {status_code})")
     return DeepSeekReviewError(f"{provider_name} review request was rejected (HTTP {status_code})")
+
+
+def _safe_format_error(provider_name: str, error: Exception) -> str:
+    """Describe schema drift without persisting model text or field values."""
+    if isinstance(error, ValidationError):
+        paths = [".".join(str(part) for part in item["loc"]) for item in error.errors()[:4]]
+        location = ", ".join(paths) or "unknown field"
+        return f"{provider_name} returned invalid review fields: {location}"
+    if isinstance(error, (KeyError, IndexError, TypeError)):
+        return f"{provider_name} response envelope was incomplete"
+    return f"{provider_name} returned malformed review JSON"

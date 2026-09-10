@@ -154,6 +154,9 @@ def parse_essay_review_output(payload: str | dict[str, Any]) -> EssayReviewOutpu
         if key in source
     }
 
+    if isinstance(normalized.get("summary"), str):
+        normalized["summary"] = normalized["summary"].strip()
+
     if isinstance(normalized.get("dimension_scores"), list):
         normalized["dimension_scores"] = [
             _normalise_dimension_score(item)
@@ -175,34 +178,33 @@ def parse_essay_review_output(payload: str | dict[str, Any]) -> EssayReviewOutpu
     if annotations is None:
         normalized["annotations"] = []
     elif isinstance(annotations, list):
-        normalized["annotations"] = [
-            _pick_fields(
-                item,
-                {
-                    "category",
-                    "kind",
-                    "issue_type",
-                    "severity",
-                    "quote",
-                    "start_offset",
-                    "end_offset",
-                    "comment",
-                    "suggestion",
-                },
-            )
-            for item in annotations
-            if isinstance(item, dict)
-        ]
+        # Sentence annotations are optional in the quick contract.  A malformed
+        # optional item must not invalidate otherwise complete core scores.
+        normalized["annotations"] = _validated_optional_items(
+            annotations,
+            ReviewAnnotation,
+            {
+                "category",
+                "kind",
+                "issue_type",
+                "severity",
+                "quote",
+                "start_offset",
+                "end_offset",
+                "comment",
+                "suggestion",
+            },
+        )
 
     suggestions = normalized.get("improvement_suggestions")
     if suggestions is None:
         normalized["improvement_suggestions"] = []
     elif isinstance(suggestions, list):
-        normalized["improvement_suggestions"] = [
-            _pick_fields(item, {"priority", "category", "suggestion", "example_revision"})
-            for item in suggestions
-            if isinstance(item, dict)
-        ]
+        normalized["improvement_suggestions"] = _validated_optional_items(
+            suggestions,
+            ImprovementSuggestion,
+            {"priority", "category", "suggestion", "example_revision"},
+        )
 
     return EssayReviewOutput.model_validate(normalized)
 
@@ -215,6 +217,10 @@ def parse_json_object(payload: str | dict[str, Any]) -> dict[str, Any]:
 
 def _normalise_dimension_score(value: dict[str, Any]) -> dict[str, Any]:
     item = _pick_fields(value, {"dimension", "score", "max_score", "rationale", "evidence"})
+    # Every dimension is defined on the same fixed 25-point scale.  Supplying
+    # the omitted constant is deterministic and does not manufacture a score.
+    if item.get("max_score") is None:
+        item["max_score"] = 25
     if isinstance(item.get("max_score"), str):
         try:
             item["max_score"] = int(float(item["max_score"].strip()))
@@ -223,12 +229,51 @@ def _normalise_dimension_score(value: dict[str, Any]) -> dict[str, Any]:
     if item.get("evidence") is None:
         item["evidence"] = []
     elif isinstance(item.get("evidence"), list):
-        item["evidence"] = [
-            _pick_fields(evidence, {"quote", "rationale", "start_offset", "end_offset"})
-            for evidence in item["evidence"]
-            if isinstance(evidence, dict)
-        ]
+        # Evidence is useful but not a core score field. Providers sometimes
+        # emit an empty placeholder object; discard only that optional object.
+        item["evidence"] = _validated_optional_items(
+            item["evidence"],
+            EvidenceItem,
+            {"quote", "rationale", "start_offset", "end_offset"},
+        )
     return item
+
+
+def _validated_optional_items(
+    values: list[Any],
+    schema: type[BaseModel],
+    fields: set[str],
+) -> list[dict[str, Any]]:
+    valid: list[dict[str, Any]] = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        candidate = _pick_fields(value, fields)
+        # Offsets are optional metadata. Keep an exact pair only when it forms
+        # a valid positive range; otherwise retain the textual evidence alone.
+        start = candidate.get("start_offset")
+        end = candidate.get("end_offset")
+        try:
+            start_value = int(start) if start is not None else None
+            end_value = int(end) if end is not None else None
+        except (TypeError, ValueError):
+            start_value = end_value = None
+        if (
+            start_value is None
+            or end_value is None
+            or start_value < 0
+            or end_value <= start_value
+        ):
+            candidate.pop("start_offset", None)
+            candidate.pop("end_offset", None)
+        else:
+            candidate["start_offset"] = start_value
+            candidate["end_offset"] = end_value
+        try:
+            valid.append(schema.model_validate(candidate).model_dump(mode="json"))
+        except ValueError:
+            continue
+    return valid
 
 
 def _pick_fields(value: dict[str, Any], fields: set[str]) -> dict[str, Any]:

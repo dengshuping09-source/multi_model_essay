@@ -5,7 +5,7 @@ from typing import Literal
 
 
 SCORING_STANDARD_VERSION = "cn-essay-v2"
-PROMPT_VERSION = "essay-review-v3-quick"
+PROMPT_VERSION = "essay-review-v4-quick-core"
 
 
 @dataclass(frozen=True)

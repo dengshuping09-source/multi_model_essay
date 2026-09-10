@@ -6,6 +6,7 @@ from decimal import Decimal
 import logging
 from pathlib import Path
 from statistics import mean, median
+from time import perf_counter
 from uuid import UUID
 
 import numpy as np
@@ -160,7 +161,12 @@ async def run_essay_ocr(
     essay_id: UUID,
     engine: OcrEngine | None = None,
     engine_key: OcrEngineKey = "paddle",
+    *,
+    run_id: UUID | None = None,
+    source_ids: set[UUID] | None = None,
+    defer_execution: bool = False,
 ) -> OcrRun:
+    ocr_started = perf_counter()
     essay = await _load_essay(session, essay_id)
     if essay is None:
         raise EssayNotFoundError
@@ -168,39 +174,50 @@ async def run_essay_ocr(
         (source for source in essay.sources if source.source_type is SourceType.IMAGE_UPLOAD),
         key=lambda source: (source.page_number or 0, source.sequence_no),
     )
+    if source_ids is not None:
+        image_sources = [source for source in image_sources if source.id in source_ids]
     if not image_sources:
         raise EssayHasNoImagesError
 
-    running = await session.scalar(
-        select(OcrRun.id).where(
-            OcrRun.essay_id == essay_id,
-            OcrRun.status == OcrRunStatus.RUNNING,
+    selected_engine = engine or (get_ocr_engine() if engine_key == "paddle" else get_ocr_engine(engine_key))
+    if run_id is None:
+        running = await session.scalar(
+            select(OcrRun.id).where(
+                OcrRun.essay_id == essay_id,
+                OcrRun.status == OcrRunStatus.RUNNING,
+            )
         )
-    )
-    if running is not None:
-        raise OcrAlreadyRunningError
-
-    attempt_no = (
-        await session.scalar(select(func.coalesce(func.max(OcrRun.attempt_no), 0)).where(OcrRun.essay_id == essay_id))
-    ) + 1
-    selected_engine = engine or (
-        get_ocr_engine() if engine_key == "paddle" else get_ocr_engine(engine_key)
-    )
-    run = OcrRun(
-        essay_id=essay_id,
-        engine_key=engine_key,
-        attempt_no=attempt_no,
-        status=OcrRunStatus.RUNNING,
-        engine_name=selected_engine.engine_name,
-        detection_model=selected_engine.detection_model,
-        recognition_model=selected_engine.recognition_model,
-        pages=[],
-    )
-    session.add(run)
-    await session.commit()
+        if running is not None:
+            raise OcrAlreadyRunningError
+        attempt_no = (
+            await session.scalar(select(func.coalesce(func.max(OcrRun.attempt_no), 0)).where(OcrRun.essay_id == essay_id))
+        ) + 1
+        run = OcrRun(
+            essay_id=essay_id,
+            engine_key=engine_key,
+            attempt_no=attempt_no,
+            status=OcrRunStatus.RUNNING,
+            engine_name=selected_engine.engine_name,
+            detection_model=selected_engine.detection_model,
+            recognition_model=selected_engine.recognition_model,
+            pages=[],
+        )
+        session.add(run)
+        await session.commit()
+        if defer_execution:
+            return run
+    else:
+        run = await session.scalar(select(OcrRun).where(OcrRun.id == run_id))
+        if run is None or run.essay_id != essay_id:
+            raise EssayNotFoundError
+        run.status = OcrRunStatus.RUNNING
+        run.completed_at = None
+        run.error_message = None
+        await session.commit()
 
     pages: list[OcrPageResult] = []
     for index, source in enumerate(image_sources, start=1):
+        page_started = perf_counter()
         page_number = source.page_number or index
         try:
             ocr_input = _select_ocr_input(source)
@@ -216,11 +233,18 @@ async def run_essay_ocr(
                 input_width=source.image_width or 1,
                 input_height=source.image_height or 1,
                 input_to_original_matrix=_identity_matrix(),
-                error_message=str(exc),
+                error_message="这页图片暂时无法读取，请重新选择或重新拍摄。",
             )
             session.add(page)
             pages.append(page)
             await session.commit()
+            logger.warning(
+                "ocr_page_input_unavailable essay_id=%s run_id=%s page=%d elapsed_ms=%d",
+                essay_id,
+                run.id,
+                page_number,
+                round((perf_counter() - page_started) * 1000),
+            )
             continue
 
         quality = source.quality_analysis
@@ -302,7 +326,28 @@ async def run_essay_ocr(
         session.add(page)
         pages.append(page)
         await session.commit()
+        logger.info(
+            "ocr_page_completed essay_id=%s run_id=%s engine=%s page=%d status=%s blocks=%d input=%s elapsed_ms=%d",
+            essay_id,
+            run.id,
+            engine_key,
+            page_number,
+            page.status.value,
+            page.block_count,
+            page.input_variant.value,
+            round((perf_counter() - page_started) * 1000),
+        )
 
+    if source_ids is not None:
+        pages = list(
+            (
+                await session.scalars(
+                    select(OcrPageResult)
+                    .where(OcrPageResult.run_id == run.id)
+                    .options(selectinload(OcrPageResult.blocks))
+                )
+            ).all()
+        )
     text_pages = [page for page in pages if page.combined_text]
     run.combined_text = "\n\n".join(page.combined_text for page in text_pages if page.combined_text) or None
     run.total_blocks = sum(page.block_count for page in pages)
@@ -329,7 +374,59 @@ async def run_essay_ocr(
     )
     if loaded_run is None:
         raise EssayNotFoundError
+    logger.info(
+        "ocr_run_completed essay_id=%s run_id=%s engine=%s status=%s pages=%d blocks=%d elapsed_ms=%d",
+        essay_id,
+        run.id,
+        engine_key,
+        run.status.value,
+        len(pages),
+        run.total_blocks,
+        round((perf_counter() - ocr_started) * 1000),
+    )
     return loaded_run
+
+
+async def retry_ocr_page(
+    session: AsyncSession,
+    essay_id: UUID,
+    run_id: UUID,
+    page_id: UUID,
+) -> OcrRun:
+    """Replace only one unsuccessful page while retaining all other page results."""
+    run = await session.scalar(
+        select(OcrRun)
+        .where(OcrRun.id == run_id, OcrRun.essay_id == essay_id)
+        .options(selectinload(OcrRun.pages))
+    )
+    if run is None:
+        raise EssayNotFoundError
+    if run.status is OcrRunStatus.RUNNING:
+        raise OcrAlreadyRunningError
+    page = next((item for item in run.pages if item.id == page_id), None)
+    if page is None:
+        raise EssayNotFoundError
+    source_id = page.source_id
+    await session.delete(page)
+    await session.commit()
+    return await run_essay_ocr(
+        session,
+        essay_id,
+        engine_key=run.engine_key,  # type: ignore[arg-type]
+        run_id=run.id,
+        source_ids={source_id},
+    )
+
+
+async def mark_ocr_run_failed(session: AsyncSession, run_id: UUID) -> None:
+    """Ensure a background-job crash never leaves a client polling forever."""
+    run = await session.scalar(select(OcrRun).where(OcrRun.id == run_id))
+    if run is None or run.status is not OcrRunStatus.RUNNING:
+        return
+    run.status = OcrRunStatus.FAILED
+    run.error_message = "识别任务暂时中断，请重新识别；已上传的图片仍然保留。"
+    run.completed_at = datetime.now(timezone.utc)
+    await session.commit()
 
 
 async def get_latest_ocr_run(

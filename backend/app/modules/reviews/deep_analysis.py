@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+import logging
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -9,6 +11,9 @@ from pydantic import SecretStr, ValidationError
 
 from app.core.config import settings
 from app.modules.reviews.contracts import DeepAnalysisOutput, parse_json_object
+
+
+logger = logging.getLogger(__name__)
 
 
 class DeepAnalysisGenerationError(RuntimeError):
@@ -36,6 +41,7 @@ class DeepAnalysisProviderResult:
     output: DeepAnalysisOutput
     provider_key: str
     model_name: str
+    timing: dict[str, int] | None = None
 
 
 DEEP_ANALYSIS_PROMPT_VERSION = "essay-deep-analysis-v1"
@@ -156,6 +162,13 @@ async def generate_deep_analysis(
     )
     last_error: DeepAnalysisGenerationError | None = None
     for backend in backends:
+        started_at = perf_counter()
+        logger.info(
+            "deep_analysis_provider_started provider=%s model=%s essay_chars=%d",
+            backend.key,
+            backend.model,
+            character_count,
+        )
         payload = {
             "model": backend.model,
             "messages": [
@@ -163,7 +176,7 @@ async def generate_deep_analysis(
                 {"role": "user", "content": user_prompt},
             ],
             "response_format": {"type": "json_object"},
-            "max_tokens": settings.deepseek_max_output_tokens,
+            "max_tokens": settings.deep_analysis_max_output_tokens,
             "temperature": 0.1,
             "stream": False,
         }
@@ -182,22 +195,48 @@ async def generate_deep_analysis(
                 )
             if response.is_error:
                 last_error = DeepAnalysisGenerationError("深度分析请求暂未完成")
+                logger.warning(
+                    "deep_analysis_provider_failed provider=%s model=%s elapsed_ms=%d error_category=http_error status_code=%d",
+                    backend.key,
+                    backend.model,
+                    round((perf_counter() - started_at) * 1000),
+                    response.status_code,
+                )
                 continue
             response_data: dict[str, Any] = response.json()
             output = _validated_output(essay_text, _extract_content(response_data))
             response_model = response_data.get("model")
+            elapsed_ms = round((perf_counter() - started_at) * 1000)
+            logger.info(
+                "deep_analysis_provider_completed provider=%s model=%s elapsed_ms=%d",
+                backend.key,
+                backend.model,
+                elapsed_ms,
+            )
             return DeepAnalysisProviderResult(
                 output=output,
                 provider_key=backend.key,
                 model_name=response_model if isinstance(response_model, str) else backend.model,
+                timing={"completed_ms": elapsed_ms},
             )
         except httpx.TimeoutException:
             last_error = DeepAnalysisGenerationError("深度分析超时，请稍后重试")
+            error_category = "timeout"
         except httpx.HTTPError:
             last_error = DeepAnalysisGenerationError("深度分析服务暂时无法连接")
+            error_category = "network"
         except DeepAnalysisResponseFormatError as exc:
             last_error = exc
+            error_category = "response_format"
         except (KeyError, IndexError, TypeError, ValueError, ValidationError):
             last_error = DeepAnalysisResponseFormatError("深度分析结果格式不完整，请稍后重试")
+            error_category = "response_format"
+        logger.warning(
+            "deep_analysis_provider_failed provider=%s model=%s elapsed_ms=%d error_category=%s",
+            backend.key,
+            backend.model,
+            round((perf_counter() - started_at) * 1000),
+            error_category,
+        )
 
     raise last_error or DeepAnalysisGenerationError("深度分析暂未完成，请稍后重试")
