@@ -392,6 +392,8 @@ async def retry_ocr_page(
     essay_id: UUID,
     run_id: UUID,
     page_id: UUID,
+    *,
+    defer_execution: bool = False,
 ) -> OcrRun:
     """Replace only one unsuccessful page while retaining all other page results."""
     run = await session.scalar(
@@ -408,7 +410,20 @@ async def retry_ocr_page(
         raise EssayNotFoundError
     source_id = page.source_id
     await session.delete(page)
+    run.status = OcrRunStatus.RUNNING
+    run.started_at = datetime.now(timezone.utc)
+    run.completed_at = None
+    run.error_message = None
     await session.commit()
+    if defer_execution:
+        queued_run = await session.scalar(
+            select(OcrRun)
+            .where(OcrRun.id == run.id)
+            .options(selectinload(OcrRun.pages).selectinload(OcrPageResult.blocks))
+        )
+        if queued_run is None:
+            raise EssayNotFoundError
+        return queued_run
     return await run_essay_ocr(
         session,
         essay_id,

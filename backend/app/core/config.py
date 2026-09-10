@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     ocr_enable_mkldnn: bool = False
     ocr_cpu_threads: int = 4
     ocr_low_confidence_threshold: float = 0.65
+    ocr_worker_enabled: bool = False
+    ocr_worker_poll_seconds: float = 1.0
+    ocr_worker_job_timeout_seconds: float = 180.0
+    ocr_worker_stale_seconds: float = 300.0
     deepseek_api_key: SecretStr | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_api_url: str | None = None

@@ -59,7 +59,10 @@ jobs:
             -i ~/.ssh/wenheng-production \
             -p "${SSH_PORT}" \
             -o BatchMode=yes \
+            -o ConnectTimeout=15 \
             -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
             -o StrictHostKeyChecking=yes \
             "${SSH_USER}@${SSH_HOST}" \
             "deploy:${GITHUB_SHA}"

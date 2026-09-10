@@ -530,12 +530,13 @@ async def recognize_essay(
     if await get_owned_essay(session, essay_id, user) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
     try:
-        if progressive:
+        if progressive or settings.ocr_worker_enabled:
             existing = await get_latest_ocr_run(session, essay_id, engine_key=engine)
             if existing is not None and existing.status.value == "running":
                 return _ocr_response(existing)
             run = await run_essay_ocr(session, essay_id, engine_key=engine, defer_execution=True)
-            background_tasks.add_task(_execute_ocr_in_background, essay_id, run.id, engine)
+            if not settings.ocr_worker_enabled:
+                background_tasks.add_task(_execute_ocr_in_background, essay_id, run.id, engine)
         else:
             run = await run_essay_ocr(session, essay_id, engine_key=engine)
     except EssayNotFoundError as exc:
@@ -576,7 +577,15 @@ async def retry_essay_ocr_page(
     if await get_owned_essay(session, essay_id, user) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
     try:
-        return _ocr_response(await retry_ocr_page(session, essay_id, run_id, page_id))
+        return _ocr_response(
+            await retry_ocr_page(
+                session,
+                essay_id,
+                run_id,
+                page_id,
+                defer_execution=settings.ocr_worker_enabled,
+            )
+        )
     except OcrAlreadyRunningError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="这篇作文仍在识别中，请稍后再试") from exc
     except EssayNotFoundError as exc:

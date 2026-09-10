@@ -145,6 +145,7 @@ if [[ "${WENHENG_FORCE_FRONTEND:-0}" == "1" ]]; then
 fi
 
 previous_backend_image="$("${docker_cli[@]}" inspect -f '{{.Image}}' wenheng-backend-1 2>/dev/null || true)"
+previous_ocr_worker_image="$("${docker_cli[@]}" inspect -f '{{.Image}}' wenheng-ocr-worker-1 2>/dev/null || true)"
 previous_frontend_image="$("${docker_cli[@]}" inspect -f '{{.Image}}' wenheng-frontend-1 2>/dev/null || true)"
 deployment_swapped=0
 
@@ -158,6 +159,11 @@ rollback_containers() {
         if [[ "${backend_changed}" == "1" && -n "${previous_backend_image}" ]]; then
             "${docker_cli[@]}" image tag "${previous_backend_image}" wenheng-backend:local
             rollback_services+=(backend)
+            if [[ -n "${previous_ocr_worker_image}" ]]; then
+                rollback_services+=(ocr-worker)
+            else
+                "${compose[@]}" stop ocr-worker >/dev/null 2>&1 || true
+            fi
         fi
         if [[ "${frontend_changed}" == "1" && -n "${previous_frontend_image}" ]]; then
             "${docker_cli[@]}" image tag "${previous_frontend_image}" wenheng-frontend:local
@@ -176,7 +182,7 @@ services_to_update=()
 if [[ "${backend_changed}" == "1" ]]; then
     echo "Building backend image; unchanged requirements reuse the Docker dependency layer."
     "${compose[@]}" build backend
-    services_to_update+=(backend)
+    services_to_update+=(backend ocr-worker)
 fi
 if [[ "${frontend_changed}" == "1" ]]; then
     echo "Building frontend image; unchanged package lock files reuse the npm dependency layer."
@@ -203,6 +209,20 @@ if (( ${#services_to_update[@]} > 0 )); then
     "${compose[@]}" up -d --no-deps "${services_to_update[@]}"
 else
     echo "No frontend or backend source changes detected; keeping current containers."
+fi
+
+if [[ "${backend_changed}" == "1" ]]; then
+    for attempt in $(seq 1 15); do
+        worker_running="$("${docker_cli[@]}" inspect -f '{{.State.Running}}' wenheng-ocr-worker-1 2>/dev/null || true)"
+        if [[ "${worker_running}" == "true" ]]; then
+            break
+        fi
+        if [[ "${attempt}" == "15" ]]; then
+            echo "OCR worker did not remain running after deployment." >&2
+            false
+        fi
+        sleep 2
+    done
 fi
 
 for attempt in $(seq 1 45); do
