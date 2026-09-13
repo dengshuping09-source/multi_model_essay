@@ -197,7 +197,7 @@ rollback_containers() {
 trap rollback_containers ERR
 
 services_to_update=()
-if [[ "${backend_changed}" == "1" ]]; then
+if [[ "${backend_changed}" == "1" && "${paddle_worker_enabled}" == "1" ]]; then
     echo "Building backend image; unchanged requirements reuse the Docker dependency layer."
     "${compose[@]}" build backend
     services_to_update+=(backend)
