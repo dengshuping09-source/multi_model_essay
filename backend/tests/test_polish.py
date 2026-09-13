@@ -69,6 +69,63 @@ def test_validate_polish_rejects_untraceable_change() -> None:
         validate_polish(ORIGINAL, output)
 
 
+def test_validate_polish_keeps_traceable_changes_and_discards_an_imprecise_quote() -> None:
+    output = EssayPolishOutput(
+        polished_text="雨停了，我走进安静的巷子。地上的积水闪着微光，我慢慢走回家。",
+        overview="保留原意，改善两处表达。",
+        changes=[
+            PolishChange(
+                original="巷子",
+                revised="安静的巷子",
+                reason="补充环境特点。",
+                category="detail",
+            ),
+            PolishChange(
+                original="地面上的水很亮",
+                revised="积水闪着微光",
+                reason="表达更具体。",
+                category="wording",
+            ),
+        ],
+    )
+
+    validated = validate_polish(ORIGINAL, output)
+
+    assert validated.polished_text == "雨停了，我走进安静的巷子。地上的水很亮，我慢慢走回家。"
+    assert [change.original for change in validated.changes] == ["巷子"]
+
+
+def test_validate_polish_accepts_no_change_when_original_is_already_clear() -> None:
+    output = EssayPolishOutput(
+        polished_text=ORIGINAL,
+        overview="原文表达已经清楚，建议保留。",
+        changes=[],
+    )
+
+    validated = validate_polish(ORIGINAL, output)
+
+    assert validated.polished_text == ORIGINAL
+    assert validated.changes == []
+
+
+def test_validate_polish_rejects_english_student_copy_for_chinese_essay() -> None:
+    output = EssayPolishOutput(
+        polished_text="The rain stopped and I walked into the alley.",
+        overview="Improve the wording and make the scene clearer.",
+        changes=[
+            PolishChange(
+                original="雨停了",
+                revised="The rain stopped",
+                reason="This makes the opening clearer.",
+                category="wording",
+            )
+        ],
+    )
+
+    with pytest.raises(PolishResponseFormatError):
+        validate_polish(ORIGINAL, output)
+
+
 def test_generate_polish_uses_first_success_without_waiting_for_failed_backend(monkeypatch) -> None:
     successful = EssayPolishOutput(
         polished_text="雨停了，我走进安静的巷子。地上的水很亮，我慢慢走回家。",

@@ -10,7 +10,12 @@ import httpx
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import settings
-from app.modules.reviews.contracts import DeepAnalysisOutput, parse_json_object
+from app.modules.reviews.contracts import (
+    DeepAnalysisOutput,
+    StudentFeedbackLanguageError,
+    ensure_chinese_deep_feedback,
+    parse_json_object,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -44,7 +49,7 @@ class DeepAnalysisProviderResult:
     timing: dict[str, int] | None = None
 
 
-DEEP_ANALYSIS_PROMPT_VERSION = "essay-deep-analysis-v1"
+DEEP_ANALYSIS_PROMPT_VERSION = "essay-deep-analysis-v2-chinese-feedback"
 
 DEEP_ANALYSIS_SYSTEM_PROMPT = """你是一位耐心、严谨的中小学语文老师。核心评分已经由多个独立评审完成；你的任务只是补充学习反馈，不得重新评分，也不得改变已有结论。
 
@@ -54,6 +59,7 @@ DEEP_ANALYSIS_SYSTEM_PROMPT = """你是一位耐心、严谨的中小学语文�
 3. 为四个既有评分维度补充更具体的解释和原文依据。
 4. 每个 quote 必须是学生原文中真实存在的连续片段。
 5. 只返回一个 JSON 对象，不要输出 Markdown，不要返回新的总分或维度分数。
+6. 学生原文主要是中文时，除 quote 原文引用和固定 JSON 枚举值外，所有说明文字必须使用自然、简体中文。
 
 JSON 结构：
 {
@@ -126,7 +132,12 @@ def _extract_content(response_data: dict[str, Any]) -> str:
 
 
 def _validated_output(essay_text: str, payload: str) -> DeepAnalysisOutput:
-    output = DeepAnalysisOutput.model_validate(parse_json_object(payload))
+    try:
+        output = ensure_chinese_deep_feedback(
+            essay_text, DeepAnalysisOutput.model_validate(parse_json_object(payload))
+        )
+    except StudentFeedbackLanguageError as exc:
+        raise DeepAnalysisResponseFormatError("深度分析没有返回中文学习反馈") from exc
     annotations = [item for item in output.annotations if item.quote in essay_text]
     details = [
         item.model_copy(

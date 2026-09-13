@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from decimal import Decimal
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Any, Iterable
 
 from app.db.models import Essay, FinalEvaluation
@@ -42,6 +44,14 @@ ISSUE_THEMES = (
 )
 
 
+def _finite_number(value: object) -> float | None:
+    """Convert database numeric values without treating booleans as scores."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return None
+    number = float(value)
+    return number if isfinite(number) else None
+
+
 def _timestamp(value: object) -> datetime:
     if not isinstance(value, datetime):
         return datetime.min.replace(tzinfo=timezone.utc)
@@ -55,11 +65,11 @@ def _dimension_values(final: FinalEvaluation) -> dict[str, tuple[float, float]]:
     for item in final.dimension_scores:
         if not isinstance(item, dict) or not isinstance(item.get("dimension"), str):
             continue
-        score = item.get("score")
-        max_score = item.get("max_score")
-        if not isinstance(score, (int, float)) or not isinstance(max_score, (int, float)) or max_score <= 0:
+        score = _finite_number(item.get("score"))
+        max_score = _finite_number(item.get("max_score"))
+        if score is None or max_score is None or max_score <= 0:
             continue
-        values[item["dimension"]] = (float(score), float(max_score))
+        values[item["dimension"]] = (score, max_score)
     return values
 
 
@@ -111,11 +121,11 @@ def build_growth_summary(
         if not isinstance(evaluated_at, datetime):
             continue
         dimensions = _dimension_values(final)
-        overall_score = getattr(final, "overall_score", None)
-        configured_full_score = getattr(essay, "full_score", None)
+        overall_score = _finite_number(getattr(final, "overall_score", None))
+        configured_full_score = _finite_number(getattr(essay, "full_score", None))
         fallback_full_score = sum(max_score for _, max_score in dimensions.values())
-        full_score = configured_full_score if isinstance(configured_full_score, (int, float)) else fallback_full_score
-        if isinstance(overall_score, (int, float)) and full_score > 0:
+        full_score = configured_full_score if configured_full_score is not None else fallback_full_score
+        if overall_score is not None and full_score > 0:
             overall_points.append(
                 {
                     "essay_id": essay.id,
@@ -123,8 +133,8 @@ def build_growth_summary(
                     "version_no": essay.version_no,
                     "title": essay.title,
                     "evaluated_at": evaluated_at,
-                    "score": float(overall_score),
-                    "max_score": float(full_score),
+                    "score": overall_score,
+                    "max_score": full_score,
                 }
             )
         for dimension, (score, max_score) in dimensions.items():

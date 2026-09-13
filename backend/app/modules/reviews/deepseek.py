@@ -8,9 +8,13 @@ import httpx
 from pydantic import ValidationError
 
 from app.core.config import settings
-from app.modules.reviews.contracts import EssayReviewOutput, parse_essay_review_output
+from app.modules.reviews.contracts import (
+    EssayReviewOutput,
+    ensure_chinese_review_feedback,
+    parse_essay_review_output,
+)
 
-PROMPT_VERSION = "essay-review-v4-quick-core"
+PROMPT_VERSION = "essay-review-v5-quick-focused-feedback"
 QUICK_REVIEW_MAX_OUTPUT_TOKENS = 1_200
 
 
@@ -59,24 +63,27 @@ class ProviderReviewResult:
     timing: dict[str, int] | None = None
 
 
-SYSTEM_PROMPT = """You are an experienced Chinese composition teacher. Make one independent, concise core judgment of the supplied essay.
+SYSTEM_PROMPT = """你是一位有经验的中小学语文老师。请独立、简洁地判断这篇作文的核心表现。
 
-Return only one JSON object with this compact contract:
+只返回一个 JSON 对象，结构如下（JSON 字段名和枚举值必须保持英文；所有解释性文字使用自然、简体中文）：
 {
-  "overall_score": "sum of the four scores",
-  "summary": "one concise overall judgment",
+  "overall_score": "四个维度分数之和",
+  "summary": "一句简短整体判断",
   "dimension_scores": [
-    {"dimension":"content_and_ideas","score":0-25,"max_score":25,"rationale":"short reason","evidence":[{"quote":"one exact excerpt","rationale":"short reason"}]},
-    {"dimension":"structure_and_coherence","score":0-25,"max_score":25,"rationale":"short reason","evidence":[]},
-    {"dimension":"language_and_expression","score":0-25,"max_score":25,"rationale":"short reason","evidence":[]},
-    {"dimension":"writing_conventions","score":0-25,"max_score":25,"rationale":"short reason","evidence":[]}
+    {"dimension":"content_and_ideas","score":0-25,"max_score":25,"rationale":"简短理由","evidence":[{"quote":"原文准确片段","rationale":"简短依据"}]},
+    {"dimension":"structure_and_coherence","score":0-25,"max_score":25,"rationale":"简短理由","evidence":[]},
+    {"dimension":"language_and_expression","score":0-25,"max_score":25,"rationale":"简短理由","evidence":[]},
+    {"dimension":"writing_conventions","score":0-25,"max_score":25,"rationale":"简短理由","evidence":[]}
+  ],
+  "annotations": [
+    {"category":"content|structure|language|expression|conventions","kind":"improvement|strength","issue_type":"typo|grammar|punctuation|wording|sentence|other","severity":"low|medium|high","quote":"原文准确片段","comment":"这里怎么看或好在哪里","suggestion":"可以怎么改或为什么值得保留"}
   ],
   "improvement_suggestions": [
-    {"priority":"low|medium|high","category":"content|structure|language|expression|conventions","suggestion":"one actionable core issue"}
+    {"priority":"low|medium|high","category":"content|structure|language|expression|conventions","suggestion":"一条可执行的核心建议"}
   ]
 }
 
-Use each required dimension exactly once. Keep every rationale short. Return at most one evidence item per dimension and at most three suggestions. Evidence quotes must be copied exactly from the essay. Do not return sentence annotations, a full language scan, polishing, long examples, or technical explanation. Do not invent facts or context. JSON is required."""
+四个必填维度各出现一次。每项理由保持简短；每个维度最多一处原文依据；最多三条修改建议；最多两条最重要的原文定位反馈。引用必须从原文逐字复制。不要做全文逐句扫描、全文表达检查、润色、长示例或技术说明，也不要虚构原文没有的事实。若原文主要是中文，除 quote 原文引用外，所有说明、总评和建议都必须使用自然、简体中文。"""
 
 
 class DeepSeekReviewClient:
@@ -89,7 +96,7 @@ class DeepSeekReviewClient:
             "model": settings.deepseek_model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"{context_instruction or ''}\n\nEssay to review:\n{essay_text}"},
+                {"role": "user", "content": f"{context_instruction or ''}\n\n待评作文：\n{essay_text}"},
             ],
             "response_format": {"type": "json_object"},
             "max_tokens": min(settings.deepseek_max_output_tokens, QUICK_REVIEW_MAX_OUTPUT_TOKENS),
@@ -127,7 +134,9 @@ class DeepSeekReviewClient:
             content = choice["message"]["content"]
             if not isinstance(content, str) or not content.strip():
                 raise DeepSeekResponseFormatError("DeepSeek returned an empty review")
-            output = parse_essay_review_output(content)
+            output = ensure_chinese_review_feedback(
+                essay_text, parse_essay_review_output(content)
+            )
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
             raise DeepSeekResponseFormatError(
                 _safe_format_error("DeepSeek", exc)

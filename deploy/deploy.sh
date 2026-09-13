@@ -197,7 +197,7 @@ rollback_containers() {
 trap rollback_containers ERR
 
 services_to_update=()
-if [[ "${backend_changed}" == "1" && "${paddle_worker_enabled}" == "1" ]]; then
+if [[ "${backend_changed}" == "1" ]]; then
     echo "Building backend image; unchanged requirements reuse the Docker dependency layer."
     "${compose[@]}" build backend
     services_to_update+=(backend)
@@ -211,7 +211,7 @@ if [[ "${frontend_changed}" == "1" ]]; then
     services_to_update+=(frontend)
 fi
 
-if [[ "${backend_changed}" == "1" && "${paddle_worker_enabled}" == "1" ]]; then
+if [[ "${backend_changed}" == "1" ]]; then
     "${compose[@]}" run --rm --no-deps -T backend python -c \
         'import asyncio; from app.db.session import check_database_connection; asyncio.run(check_database_connection())'
 
@@ -232,7 +232,7 @@ else
     echo "No frontend or backend source changes detected; keeping current containers."
 fi
 
-if [[ "${backend_changed}" == "1" ]]; then
+if [[ "${backend_changed}" == "1" && "${paddle_worker_enabled}" == "1" ]]; then
     for attempt in $(seq 1 15); do
         worker_running="$("${docker_cli[@]}" inspect -f '{{.State.Running}}' wenheng-ocr-worker-1 2>/dev/null || true)"
         if [[ "${worker_running}" == "true" ]]; then

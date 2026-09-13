@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -67,6 +68,20 @@ def test_one_work_shows_snapshot_without_long_term_claims() -> None:
     assert result["latest"]["dimension_scores"]
     assert result["overall_trend"]["direction"] == "insufficient"
     assert result["overall_trend"]["points"][0]["score"] == 78
+
+
+def test_database_decimal_scores_are_included_in_growth_trends() -> None:
+    essay, final = make_record(day=1, scores=(20, 18, 19, 21))
+    essay.full_score = Decimal("100")
+    final.overall_score = Decimal("78.00")
+    final.dimension_scores[0]["score"] = Decimal("20.00")
+
+    result = build_growth_summary([(essay, final)])
+
+    assert result["overall_trend"]["points"][0]["score"] == 78.0
+    assert result["overall_trend"]["points"][0]["max_score"] == 100.0
+    assert result["latest"]["overall_score"] == 78.0
+    assert result["dimension_trends"][0]["points"][0]["score"] == 20.0
 
 
 def test_three_works_find_supported_dimension_improvement_and_recurring_theme() -> None:

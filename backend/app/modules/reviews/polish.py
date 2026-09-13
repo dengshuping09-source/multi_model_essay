@@ -11,7 +11,13 @@ import httpx
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import settings
-from app.modules.reviews.contracts import EssayPolishOutput, parse_json_object
+from app.modules.reviews.contracts import (
+    EssayPolishOutput,
+    PolishChange,
+    StudentFeedbackLanguageError,
+    ensure_chinese_polish_feedback,
+    parse_json_object,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -47,6 +53,9 @@ POLISH_SYSTEM_PROMPT = """你是一位耐心的中小学语文老师。请在保
 3. 保留原文段落顺序，尽量控制修改数量。
 4. 每项修改都要引用原文中真实存在的连续片段，并给出修改后的对应片段和学生能理解的原因。
 5. 只返回一个 JSON 对象，不要输出 Markdown。
+6. 学生原文主要是中文时，除 original 原文引用和固定 JSON 枚举值外，所有内容都必须使用自然、简体中文。
+7. original 必须逐字复制自学生原文，revised 必须逐字出现在 polished_text 中；每个片段尽量不超过 120 个字，并按原文顺序列出。
+8. 如果原文确实无需修改，polished_text 原样返回，changes 返回空数组，不要为了凑数量制造修改。
 
 JSON 结构必须是：
 {
@@ -146,6 +155,10 @@ def _strip_code_fence(content: str) -> str:
 
 
 def validate_polish(original_text: str, output: EssayPolishOutput) -> EssayPolishOutput:
+    try:
+        output = ensure_chinese_polish_feedback(original_text, output)
+    except StudentFeedbackLanguageError as exc:
+        raise PolishResponseFormatError("润色结果没有返回中文说明，请稍后重试") from exc
     original = original_text.strip()
     polished = output.polished_text.strip()
     length_ratio = len(polished) / max(len(original), 1)
@@ -153,14 +166,49 @@ def validate_polish(original_text: str, output: EssayPolishOutput) -> EssayPolis
     if not 0.6 <= length_ratio <= 1.5 or similarity < 0.42:
         raise PolishResponseFormatError("润色结果改动过大，已为你保留原文，请稍后重试")
 
+    if not output.changes:
+        if polished != original:
+            raise PolishResponseFormatError("润色结果与原文无法可靠对照，请稍后重试")
+        return output.model_copy(update={"polished_text": original, "changes": []})
+
+    # Providers occasionally return one imprecise quote beside several useful,
+    # fully traceable edits.  Rejecting the whole response makes the UI look
+    # broken.  Keep only exact, explainable edits and reconstruct the displayed
+    # draft from the student's original, so no unlisted model rewrite leaks in.
+    candidates: list[tuple[int, int, PolishChange]] = []
     seen: set[str] = set()
     for change in output.changes:
-        if change.original not in original or change.revised not in polished:
-            raise PolishResponseFormatError("润色结果与原文无法可靠对照，请稍后重试")
         if change.original in seen:
-            raise PolishResponseFormatError("润色结果包含重复修改，请稍后重试")
+            continue
         seen.add(change.original)
-    return output.model_copy(update={"polished_text": polished})
+        start = original.find(change.original)
+        if start < 0 or change.revised not in polished:
+            continue
+        candidates.append((start, start + len(change.original), change))
+
+    selected: list[tuple[int, int, PolishChange]] = []
+    occupied: list[tuple[int, int]] = []
+    for candidate in sorted(candidates, key=lambda item: (item[1] - item[0], item[0])):
+        start, end, _ = candidate
+        if any(start < occupied_end and end > occupied_start for occupied_start, occupied_end in occupied):
+            continue
+        selected.append(candidate)
+        occupied.append((start, end))
+    selected.sort(key=lambda item: item[0])
+    if not selected:
+        raise PolishResponseFormatError("润色结果与原文无法可靠对照，请稍后重试")
+
+    rebuilt: list[str] = []
+    cursor = 0
+    traceable_changes: list[PolishChange] = []
+    for start, end, change in selected:
+        rebuilt.extend((original[cursor:start], change.revised))
+        traceable_changes.append(change)
+        cursor = end
+    rebuilt.append(original[cursor:])
+    return output.model_copy(
+        update={"polished_text": "".join(rebuilt), "changes": traceable_changes}
+    )
 
 
 async def _request_polish(

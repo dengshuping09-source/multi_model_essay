@@ -288,9 +288,10 @@ def review_output_from_record(review: ModelReview) -> EssayReviewOutput | None:
 def _quick_review_output(output: EssayReviewOutput) -> EssayReviewOutput:
     """Keep only data needed to produce the first useful report.
 
-    Scores, dimension rationales and one exact evidence item per dimension remain
-    untouched. Sentence-level scanning is deliberately deferred to the optional
-    deep-analysis task.
+    Scores, dimension rationales, one exact evidence item per dimension, and a
+    very small set of high-value original-text feedback remain untouched. A
+    full sentence-level scan is deliberately deferred to the optional deep
+    analysis task.
     """
 
     priority_rank = {"high": 0, "medium": 1, "low": 2}
@@ -302,10 +303,17 @@ def _quick_review_output(output: EssayReviewOutput) -> EssayReviewOutput:
         output.improvement_suggestions,
         key=lambda item: priority_rank[item.priority],
     )[:3]
+    annotations = sorted(
+        output.annotations,
+        key=lambda item: (
+            0 if item.kind == "improvement" else 1,
+            priority_rank[item.severity],
+        ),
+    )[:2]
     return output.model_copy(
         update={
             "dimension_scores": dimensions,
-            "annotations": [],
+            "annotations": annotations,
             "improvement_suggestions": suggestions,
         }
     )

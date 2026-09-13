@@ -8,7 +8,11 @@ import httpx
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import settings
-from app.modules.reviews.contracts import EssayReviewOutput, parse_essay_review_output
+from app.modules.reviews.contracts import (
+    EssayReviewOutput,
+    ensure_chinese_review_feedback,
+    parse_essay_review_output,
+)
 from app.modules.reviews.deepseek import (
     DeepSeekReviewError,
     DeepSeekResponseFormatError,
@@ -113,7 +117,7 @@ class OpenAiCompatibleProvider:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": f"{scoring_instruction(context, essay_text)}\n\nEssay to review:\n{essay_text}",
+                    "content": f"{scoring_instruction(context, essay_text)}\n\n待评作文：\n{essay_text}",
                 },
             ],
             "response_format": {"type": "json_object"},
@@ -150,7 +154,9 @@ class OpenAiCompatibleProvider:
             content = response_data["choices"][0]["message"]["content"]
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("empty content")
-            output = parse_essay_review_output(content)
+            output = ensure_chinese_review_feedback(
+                essay_text, parse_essay_review_output(content)
+            )
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
             raise DeepSeekResponseFormatError(
                 _safe_format_error(self.display_name, exc)

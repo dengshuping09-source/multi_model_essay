@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from app.db.models import ReviewStatus
-from app.modules.reports.pdf import build_report_pdf
+from app.modules.reports.pdf import CONSISTENCY_LABELS, _review_summary, build_report_pdf
 
 
 def test_report_pdf_contains_a_valid_pdf_document(tmp_path) -> None:
@@ -56,3 +56,18 @@ def test_report_pdf_contains_a_valid_pdf_document(tmp_path) -> None:
     assert output_path.stat().st_size > 1_000
     assert content.count(b"/Type /Page") >= 3
     assert b"STSong-Light" in content
+
+
+def test_pdf_uses_student_facing_chinese_for_consistency_and_failed_reviews() -> None:
+    assert CONSISTENCY_LABELS["medium"] == "部分判断存在差异"
+    failed = SimpleNamespace(
+        status=ReviewStatus.FAILED,
+        summary=None,
+        error_message="Provider unavailable (HTTP 503)",
+    )
+
+    summary = _review_summary(failed)
+
+    assert "未形成有效结果" in summary
+    assert "Provider" not in summary
+    assert "HTTP" not in summary

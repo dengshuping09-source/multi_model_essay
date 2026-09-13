@@ -36,6 +36,11 @@ DIMENSION_LABELS = {
     "language_and_expression": "语言与表达",
     "writing_conventions": "书写规范",
 }
+CONSISTENCY_LABELS = {
+    "high": "主要判断一致",
+    "medium": "部分判断存在差异",
+    "low": "存在较明显分歧",
+}
 
 
 def _paragraph(value: object, style: ParagraphStyle) -> Paragraph:
@@ -90,6 +95,12 @@ def _dispute_text(dispute: object) -> str:
     return "检测到需要进一步确认的评分差异"
 
 
+def _review_summary(review: ModelReview) -> str:
+    if review.status is ReviewStatus.COMPLETED and review.summary:
+        return review.summary
+    return "该评审视角未形成有效结果，综合报告未采用这一路判断。"
+
+
 def build_report_pdf(
     essay: Essay,
     final: FinalEvaluation,
@@ -131,7 +142,9 @@ def build_report_pdf(
         [[
             _paragraph(f"{float(final.overall_score) if final.overall_score is not None else '--'}<br/><font size=9>综合评分 / {essay.full_score}</font>", score_style),
             _paragraph(
-                f"<b>可信度 {confidence:.0f}%</b><br/>一致度：{final.consistency or '待分析'}<br/>{final.summary or '暂无综合说明'}",
+                f"<b>可信度 {confidence:.0f}%</b><br/>"
+                f"评测一致性：{CONSISTENCY_LABELS.get(str(final.consistency), '暂缺足够信息')}<br/>"
+                f"{final.summary or '暂无综合说明'}",
                 body,
             ),
         ]],
@@ -205,7 +218,7 @@ def build_report_pdf(
     story.append(_paragraph("独立模型意见", heading))
     for review in reviews:
         output = review.raw_response.get("output") if isinstance(review.raw_response, dict) else None
-        summary = review.summary or review.error_message or "未返回可展示的评审结果"
+        summary = _review_summary(review)
         story.append(_paragraph(
             f"<b>{PROVIDER_LABELS.get(review.model_provider, review.model_provider)}</b>　"
             f"状态：{REVIEW_STATUS_LABELS.get(review.status.value, '状态未知')}　"

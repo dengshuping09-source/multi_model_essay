@@ -596,7 +596,8 @@ const reportEssayText = computed(() =>
 )
 const reportAnnotations = computed<ReviewAnnotationDetail[]>(() => {
   const severityRank = { high: 0, medium: 1, low: 2 }
-  const sourceAnnotations = reportDeepAnalysis.value?.status === 'completed'
+  const isQuickFeedback = reportDeepAnalysis.value?.status !== 'completed'
+  const sourceAnnotations = !isQuickFeedback
     ? reportDeepAnalysis.value.annotations
     : reviewBatch.value?.reviews.flatMap((review) => review.annotations ?? []) ?? []
   const ordered = deduplicateReportAnnotations(
@@ -610,7 +611,9 @@ const reportAnnotations = computed<ReviewAnnotationDetail[]>(() => {
     return severityRank[left.severity ?? 'low'] - severityRank[right.severity ?? 'low']
   })
   const length = reportEssayText.value.replace(/\s/g, '').length
-  const limit = length < 250 ? 5 : length < 500 ? 7 : length <= 800 ? 10 : 12
+  // Quick evaluation deliberately keeps only a compact, immediately useful
+  // set. Deep analysis remains the place for the complete annotation pass.
+  const limit = isQuickFeedback ? 5 : length < 250 ? 5 : length < 500 ? 7 : length <= 800 ? 10 : 12
   if (ordered.length <= limit) return ordered
 
   // Keep a small number of genuine strengths visible, then fill the remaining
@@ -3088,7 +3091,7 @@ onBeforeUnmount(() => {
         <nav v-if="reviewBatch?.final_evaluation" class="report-reading-nav" aria-label="报告快速导航">
           <span>建议先看</span>
           <a href="#overall-feedback-title">完整总评</a>
-          <a v-if="reportAnnotations.length || !isLegacyReport" :href="reportAnnotations.length ? '#annotation-title' : '#deep-analysis-entry-title'">逐句旁批</a>
+          <a v-if="reportAnnotations.length || !isLegacyReport" :href="reportAnnotations.length ? '#annotation-title' : '#deep-analysis-entry-title'">{{ deepAnalysisStatus === 'completed' ? '逐句旁批' : '原文反馈' }}</a>
           <a v-if="reportSuggestions.length" href="#priority-title">修改建议</a>
           <button class="primary-button" type="button" @click="reviseEssay()"><Edit3 :size="16" />修改作文</button>
         </nav>
@@ -3216,12 +3219,12 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-if="reportEssayText && reportAnnotations.length" class="annotation-learning" aria-labelledby="annotation-title">
-          <div class="report-section-heading"><div><p class="eyebrow">逐句旁批</p><h2 id="annotation-title">每一条反馈，都能回到原文</h2><p>所有有批注的句子都已标记。选择一条旁批，即可聚焦查看对应原文；手写作文还可以回到原稿位置。</p></div><span>逐句旁批 · 共 {{ reportAnnotations.length }} 条</span></div>
+          <div class="report-section-heading"><div><p class="eyebrow">{{ deepAnalysisStatus === 'completed' ? '逐句旁批' : '核心原文反馈' }}</p><h2 id="annotation-title">{{ deepAnalysisStatus === 'completed' ? '每一条反馈，都能回到原文' : '先看最值得修改的原文位置' }}</h2><p>{{ deepAnalysisStatus === 'completed' ? '所有有批注的句子都已标记。选择一条旁批，即可聚焦查看对应原文；手写作文还可以回到原稿位置。' : '快速评测先标出最重要的反馈。选择一条即可聚焦原文；继续深度评测后，会补充更完整的逐句旁批。' }}</p></div><span>{{ deepAnalysisStatus === 'completed' ? '逐句旁批' : '核心反馈' }} · 共 {{ reportAnnotations.length }} 条</span></div>
           <div class="annotation-workspace annotation-workspace--feedback-only">
             <aside class="annotation-sidebar" aria-label="逐句旁批列表与详情">
               <template v-if="selectedReportAnnotation">
                 <nav class="annotation-directory" aria-label="全部逐句旁批">
-                  <div class="annotation-directory-heading"><strong>逐句旁批</strong><span>共 {{ reportAnnotations.length }} 条</span></div>
+                  <div class="annotation-directory-heading"><strong>{{ deepAnalysisStatus === 'completed' ? '逐句旁批' : '核心原文反馈' }}</strong><span>共 {{ reportAnnotations.length }} 条</span></div>
                   <ol class="annotation-directory-list"><li v-for="(annotation, index) in reportAnnotations" :key="annotation.id"><button type="button" :class="[`direction-${reportAnnotationDirection(annotation)}`, { active: selectedReportAnnotation.id === annotation.id }]" :data-report-directory-id="annotation.id" :aria-current="selectedReportAnnotation.id === annotation.id ? 'true' : undefined" @click="selectReportAnnotation(annotation, 'directory')"><span class="annotation-directory-number">{{ index + 1 }}</span><span class="annotation-directory-copy"><small>{{ reportAnnotationDirectionLabel(annotation) }} · {{ annotationTypeLabel(annotation) }}</small><strong>“{{ annotationPreview(annotation) }}”</strong></span><ChevronRight :size="15" aria-hidden="true" /></button></li></ol>
                 </nav>
                 <article class="annotation-teacher-note" :class="`direction-${reportAnnotationDirection(selectedReportAnnotation)}`" aria-live="polite">

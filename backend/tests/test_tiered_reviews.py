@@ -67,14 +67,14 @@ def full_review_output() -> EssayReviewOutput:
     )
 
 
-def test_quick_review_keeps_scores_but_defers_sentence_level_content() -> None:
+def test_quick_review_keeps_core_original_text_feedback() -> None:
     original = full_review_output()
     quick = _quick_review_output(original)
 
     assert quick.overall_score == original.overall_score
     assert [item.score for item in quick.dimension_scores] == [21, 21, 21, 21]
     assert all(len(item.evidence) == 1 for item in quick.dimension_scores)
-    assert quick.annotations == []
+    assert [item.quote for item in quick.annotations] == ["一起走回家"]
     assert [item.priority for item in quick.improvement_suggestions] == ["high", "medium", "low"]
     assert original.annotations
 
@@ -119,6 +119,26 @@ def test_deep_analysis_rejects_payload_without_locatable_evidence() -> None:
     payload = {
         "overall_analysis": "只有泛泛而谈的说明。",
         "annotations": [],
+        "dimension_details": [],
+    }
+
+    with pytest.raises(DeepAnalysisResponseFormatError):
+        _validated_output(ESSAY_TEXT, json.dumps(payload, ensure_ascii=False))
+
+
+def test_deep_analysis_rejects_english_explanation_for_chinese_essay() -> None:
+    payload = {
+        "overall_analysis": "Add more details to the middle paragraph.",
+        "annotations": [
+            {
+                "category": "language",
+                "kind": "improvement",
+                "severity": "medium",
+                "quote": "春雨落在窗台上",
+                "comment": "画面已经清楚。",
+                "suggestion": "保留这处描写。",
+            }
+        ],
         "dimension_details": [],
     }
 

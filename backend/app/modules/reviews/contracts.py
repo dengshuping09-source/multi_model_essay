@@ -23,6 +23,36 @@ DIMENSION_CODES: set[str] = {
 }
 
 
+class StudentFeedbackLanguageError(ValueError):
+    """A student-facing explanation was returned in the wrong language."""
+
+
+def _is_mainly_chinese_essay(text: str) -> bool:
+    chinese = sum("\u3400" <= character <= "\u9fff" for character in text)
+    latin = sum(character.isascii() and character.isalpha() for character in text)
+    return chinese >= 6 and chinese >= latin * 0.25
+
+
+def _looks_english_dominant(text: str) -> bool:
+    """Reject clear English prose without rejecting ordinary bilingual labels.
+
+    A quoted original sentence is intentionally never checked here.  This is
+    only used for the explanation fields that the product itself shows to a
+    Chinese-writing student.
+    """
+
+    chinese = sum("\u3400" <= character <= "\u9fff" for character in text)
+    latin = sum(character.isascii() and character.isalpha() for character in text)
+    return latin >= 8 and chinese * 2 < latin
+
+
+def _ensure_chinese_student_copy(essay_text: str, values: list[str | None]) -> None:
+    if not _is_mainly_chinese_essay(essay_text):
+        return
+    if any(value and _looks_english_dominant(value) for value in values):
+        raise StudentFeedbackLanguageError("student-facing feedback was not returned in Chinese")
+
+
 class EvidenceItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -105,6 +135,23 @@ class EssayReviewOutput(BaseModel):
         return self
 
 
+def ensure_chinese_review_feedback(
+    essay_text: str, output: EssayReviewOutput
+) -> EssayReviewOutput:
+    """Ensure a Chinese composition does not surface English teaching prose."""
+
+    values: list[str | None] = [output.summary]
+    for dimension in output.dimension_scores:
+        values.append(dimension.rationale)
+        values.extend(item.rationale for item in dimension.evidence)
+    for annotation in output.annotations:
+        values.extend((annotation.comment, annotation.suggestion))
+    for suggestion in output.improvement_suggestions:
+        values.extend((suggestion.suggestion, suggestion.example_revision))
+    _ensure_chinese_student_copy(essay_text, values)
+    return output
+
+
 class DeepDimensionDetail(BaseModel):
     """Additional evidence for an existing score; it never recalculates that score."""
 
@@ -130,6 +177,19 @@ class DeepAnalysisOutput(BaseModel):
         if len(dimensions) != len(set(dimensions)):
             raise ValueError("dimension_details must not repeat a dimension")
         return self
+
+
+def ensure_chinese_deep_feedback(
+    essay_text: str, output: DeepAnalysisOutput
+) -> DeepAnalysisOutput:
+    values: list[str | None] = [output.overall_analysis]
+    for annotation in output.annotations:
+        values.extend((annotation.comment, annotation.suggestion))
+    for detail in output.dimension_details:
+        values.append(detail.explanation)
+        values.extend(item.rationale for item in detail.evidence)
+    _ensure_chinese_student_copy(essay_text, values)
+    return output
 
 
 def parse_essay_review_output(payload: str | dict[str, Any]) -> EssayReviewOutput:
@@ -346,4 +406,16 @@ class EssayPolishOutput(BaseModel):
 
     polished_text: str = Field(min_length=1, max_length=50_000)
     overview: str = Field(min_length=1, max_length=1_000)
-    changes: list[PolishChange] = Field(min_length=1, max_length=12)
+    # A well-written sentence may need no change.  Keeping an empty list is
+    # preferable to forcing the model to invent a modification.
+    changes: list[PolishChange] = Field(default_factory=list, max_length=12)
+
+
+def ensure_chinese_polish_feedback(
+    essay_text: str, output: EssayPolishOutput
+) -> EssayPolishOutput:
+    values: list[str | None] = [output.polished_text, output.overview]
+    for change in output.changes:
+        values.extend((change.revised, change.reason))
+    _ensure_chinese_student_copy(essay_text, values)
+    return output

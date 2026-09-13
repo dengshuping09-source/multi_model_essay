@@ -5,7 +5,7 @@ from typing import Literal
 
 
 SCORING_STANDARD_VERSION = "cn-essay-v2"
-PROMPT_VERSION = "essay-review-v4-quick-core"
+PROMPT_VERSION = "essay-review-v5-quick-focused-feedback"
 
 
 @dataclass(frozen=True)
@@ -20,16 +20,18 @@ class EssayReviewContext:
 def scoring_instruction(context: EssayReviewContext, essay_text: str = "") -> str:
     char_count = len(essay_text.strip())
     details = [
-        "Use the shared Chinese composition standard cn-essay-v2.",
-        "Scores are normalized to 100 for cross-model comparison: four required dimensions, each 0-25.",
-        "Judge the essay in the supplied educational context. The assignment full score is context only; do not change the normalized 100-point contract.",
-        f"Grade level: {context.grade_level or 'not supplied'}.",
-        f"Genre: {context.genre or 'not supplied'}.",
-        f"Writing prompt or requirement: {context.writing_prompt or 'not supplied'}.",
-        f"Assignment full score: {context.full_score}.",
-        "Do not penalize missing context. Cite only exact excerpts from the submitted essay, and give actionable, age-appropriate suggestions.",
-        f"The essay has {char_count} characters.",
-        "This is the quick evaluation stage. Keep the summary concise, include at most one exact evidence excerpt per dimension, return no sentence annotations, and provide only 1-3 highest-priority improvement suggestions.",
-        "Do not perform a full typo, grammar, punctuation, or sentence-by-sentence scan in this stage. Those are generated separately only when the student requests a deep analysis.",
+        "使用统一的中文作文评分标准 cn-essay-v2。",
+        "为了便于多个独立评审比较，分数统一按 100 分计算：四个必填维度各 0–25 分。",
+        "结合提供的学习情境评阅作文。题目满分只用于理解任务，不得改变统一的 100 分评分规则。",
+        f"年级：{context.grade_level or '未提供'}。",
+        f"文体：{context.genre or '未提供'}。",
+        f"写作题目或要求：{context.writing_prompt or '未提供'}。",
+        f"作业原始满分：{context.full_score} 分。",
+        "未提供的信息不得扣分。引用只能使用学生原文中连续、完全一致的片段；建议要具体、适合该年级学生执行。",
+        f"作文约 {char_count} 个字符。",
+        "这是快速评测阶段：总评保持简短；每个维度最多保留一处原文依据；给出 1–3 条最高优先级修改建议。",
+        "同时只挑选 1–2 条最重要、能够精确回到原文的反馈。每条都必须填写原文片段、判断和可执行建议；最多一条可以是值得保留的亮点。",
+        "不要进行全文逐句扫描、完整错别字/病句/标点检查、全文润色、长示例或技术说明；这些只在学生主动开始深度评测后补充。",
+        "如果学生原文主要是中文，除原文引用和固定 JSON 枚举值外，所有面向学生的文字必须使用自然、简体中文，不得输出英文句子。",
     ]
     return "\n".join(details)
