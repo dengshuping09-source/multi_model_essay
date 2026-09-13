@@ -185,7 +185,7 @@ GET /api/essays/sources/{source_id}/images/processed
 
 图像几何变换会同时保存正向和逆向 3×3 矩阵，供 OCR 区域坐标映射回原图。
 
-## PaddleOCR 文字识别
+## PaddleOCR 备用识别
 
 作文图片提交成功后，前端会自动调用识别接口。后端按用户上传页序逐页处理，质量良好的页面使用原图，已完成必要优化的页面使用处理图；`unusable` 页面会跳过并提示重新拍摄。
 
@@ -196,7 +196,7 @@ GET  /api/essays/{essay_id}/ocr
 
 每次识别记录保存在 `ocr_runs`，逐页状态和输入图版本保存在 `ocr_page_results`，识别文字、置信度、阅读顺序、识别图坐标和原图坐标保存在 `ocr_blocks`。多页纯文本只作为一次识别结果的组合视图，不覆盖用户直接输入的 `essays.original_text`。
 
-首次识别会下载 PaddleOCR 模型。默认使用 PP-OCRv5 服务端检测和识别模型，识别模型覆盖简体中文及手写、竖排和生僻字等复杂场景；可通过后端环境变量替换模型或设备。
+PaddleOCR 保留为可人工启用的本地备用识别能力。默认的生产 OCR 提供方为百度手写文字识别，因此日常上传不会启动 Paddle Worker 或加载 Paddle 模型；只有明确将 `OCR_DEFAULT_ENGINE=paddle` 并启用 `paddle-worker` profile 时才会加载本地模型。
 
 ## OCR 校对与图文对齐
 
@@ -308,7 +308,7 @@ cd backend
 
 ## 双 OCR 引擎
 
-本项目保留 PaddleOCR 作为本地 OCR 引擎，并新增百度手写文字识别作为独立的第二引擎。两者不会相互覆盖：每次运行都会在 `ocr_runs` 中记录 `engine_key`，并拥有各自的页面、文本区域、坐标、阅读顺序和置信度记录。
+本项目默认使用百度手写文字识别处理中文学生手写作文，并保留 PaddleOCR 作为人工启用的本地备用引擎。两者不会相互覆盖：每次运行都会在 `ocr_runs` 中记录 `engine_key`，并拥有各自的页面、文本区域、坐标、阅读顺序和置信度记录。
 
 ```text
 POST /api/essays/{essay_id}/ocr?engine=paddle
@@ -317,17 +317,21 @@ GET  /api/essays/{essay_id}/ocr?engine=paddle
 GET  /api/essays/{essay_id}/ocr?engine=baidu
 ```
 
-前端 OCR 区域可切换 “PaddleOCR” 和 “百度 OCR”，以查看同一篇作文由不同引擎产生的独立结果。校对请求会携带所选 OCR 运行 ID，因此用户修改始终对应当前引擎的原始识别结果。
+上传和校对流程会优先读取默认百度 OCR 结果；历史作文若只保存了旧的 PaddleOCR 运行结果，仍可正常打开和校对。校对请求会携带实际 OCR 运行 ID，因此用户修改始终对应相应识别结果的原始坐标。
 
 百度接口只在服务端调用；应用本身仍通过 multipart 上传原始文件。适配器按百度接口要求在调用前临时转为 Base64，并保留原始图片与既有坐标映射。请在 `backend/.env` 配置以下变量，勿提交真实凭据：
 
 ```dotenv
+OCR_DEFAULT_ENGINE=baidu
+BAIDU_OCR_APP_ID=replace_with_your_baidu_ocr_app_id
 BAIDU_OCR_API_KEY=replace_with_your_baidu_ocr_api_key
 BAIDU_OCR_SECRET_KEY=replace_with_your_baidu_ocr_secret_key
 BAIDU_OCR_TOKEN_URL=https://aip.baidubce.com/oauth/2.0/token
 BAIDU_HANDWRITING_URL=https://aip.baidubce.com/rest/2.0/ocr/v1/handwriting
 BAIDU_OCR_TIMEOUT_SECONDS=30
 ```
+
+如需人工切回本地 PaddleOCR，设置 `OCR_DEFAULT_ENGINE=paddle`、`OCR_WORKER_ENABLED=true`，并使用 `docker compose --profile paddle-worker up -d ocr-worker` 明确启动 Worker。百度请求失败不会自动切换到 PaddleOCR。
 ## Competition Demo Features
 
 - The report page visualizes the aggregate score, confidence, four-dimension score spread, independent model results, detected anomalies, and source evidence.

@@ -227,9 +227,10 @@ type AnnotationDirection = 'keep' | 'improve' | 'fix'
 interface EssayHistoryItem { id: string; root_essay_id: string; parent_essay_id: string | null; version_no: number; version_count: number; title: string | null; grade_level: string | null; genre: string | null; status: string; created_at: string; latest_score: number | null; image_count: number }
 interface GrowthDimensionPoint { essay_id: string; root_essay_id: string; version_no: number; title: string | null; evaluated_at: string; score: number; max_score: number }
 interface GrowthDimensionTrend { dimension: ReviewDimension['dimension']; direction: 'improving' | 'steady' | 'declining' | 'insufficient'; change: number | null; recent_change: number | null; points: GrowthDimensionPoint[] }
+interface GrowthOverallTrend { direction: 'improving' | 'steady' | 'declining' | 'insufficient'; change: number | null; recent_change: number | null; points: GrowthDimensionPoint[] }
 interface GrowthIssuePattern { category: string; issue_type: string | null; label: string; work_count: number; occurrence_count: number; latest_statement: string }
 interface GrowthImprovedIssue { essay_id: string; title: string | null; previous_version_no: number; current_version_no: number; category: string; issue_type: string | null; label: string; statement: string; explanation: string; evaluated_at: string }
-interface GrowthSummary { evaluation_count: number; work_count: number; has_long_term_insights: boolean; additional_works_needed: number; latest: { essay_id: string; title: string | null; evaluated_at: string; overall_score: number | null; dimension_scores: Array<{ dimension: ReviewDimension['dimension']; score: number; max_score: number }> } | null; recent_improvement_dimension: ReviewDimension['dimension'] | null; practice_dimension: ReviewDimension['dimension'] | null; practice_issue: GrowthIssuePattern | null; dimension_trends: GrowthDimensionTrend[]; recurring_issues: GrowthIssuePattern[]; improved_issues: GrowthImprovedIssue[]; revision_summary: { comparison_count: number; improved_count: number; steady_count: number; declined_count: number; most_improved_dimension: ReviewDimension['dimension'] | null; most_improved_dimension_count: number } }
+interface GrowthSummary { evaluation_count: number; work_count: number; has_long_term_insights: boolean; additional_works_needed: number; latest: { essay_id: string; title: string | null; evaluated_at: string; overall_score: number | null; dimension_scores: Array<{ dimension: ReviewDimension['dimension']; score: number; max_score: number }> } | null; recent_improvement_dimension: ReviewDimension['dimension'] | null; practice_dimension: ReviewDimension['dimension'] | null; practice_issue: GrowthIssuePattern | null; overall_trend?: GrowthOverallTrend; dimension_trends: GrowthDimensionTrend[]; recurring_issues: GrowthIssuePattern[]; improved_issues: GrowthImprovedIssue[]; revision_summary: { comparison_count: number; improved_count: number; steady_count: number; declined_count: number; most_improved_dimension: ReviewDimension['dimension'] | null; most_improved_dimension_count: number } }
 interface PendingRevisionMeta { parent_id: string; version: number; source_text: string; focus_items: string[] }
 interface EssayVersionSummary { id: string; root_essay_id: string; parent_essay_id: string | null; version_no: number; title: string | null; created_at: string; overall_score: number | null; dimension_scores: FinalEvaluationResult['dimension_scores']; summary: string | null; top_issue: string | null }
 interface EssayVersionHistory { root_essay_id: string; current_essay_id: string; items: EssayVersionSummary[] }
@@ -361,7 +362,7 @@ const cameraInput = ref<HTMLInputElement | null>(null)
 const isSubmitting = ref(false)
 const isRecognizing = ref(false)
 const retryingOcrPageId = ref<string | null>(null)
-const selectedOcrEngine = ref<'paddle' | 'baidu'>('paddle')
+const selectedOcrEngine = ref<'paddle' | 'baidu'>('baidu')
 const ocrRuns = ref<Partial<Record<'paddle' | 'baidu', OcrRunResult>>>({})
 const errorMessage = ref('')
 const ocrErrorMessage = ref('')
@@ -396,9 +397,12 @@ const isPolishing = ref(false)
 const polishErrorMessage = ref('')
 const polishViewMode = ref<'compare' | 'polished'>('compare')
 const annotationReturnToReport = ref(false)
-let reviewPollingTimer: ReturnType<typeof setInterval> | null = null
-let depthAnalysisPollingTimer: ReturnType<typeof setInterval> | null = null
-let ocrPollingTimer: ReturnType<typeof setInterval> | null = null
+let reviewPollingTimer: ReturnType<typeof setTimeout> | null = null
+let depthAnalysisPollingTimer: ReturnType<typeof setTimeout> | null = null
+let ocrPollingTimer: ReturnType<typeof setTimeout> | null = null
+let reviewPollingGeneration = 0
+let depthAnalysisPollingGeneration = 0
+let ocrPollingGeneration = 0
 let reportAnnotationEmphasisTimer: number | null = null
 let selectedImageIdSequence = 0
 
@@ -434,17 +438,25 @@ const ocrDisplayPages = computed(() => selectedImages.value.map((image, index) =
   pageNumber: index + 1,
   page: ocrResult.value?.pages.find((item) => item.source_id === image.sourceId) ?? null,
 })))
-const completedOcrPages = computed(() => ocrDisplayPages.value.filter((item) => item.page !== null).length)
+// A page can be processed but still fail or be empty. Keep that distinct from
+// a usable page so students are never told every page is "complete" when one
+// still needs attention.
+const settledOcrPages = computed(() => ocrDisplayPages.value.filter((item) => item.page !== null).length)
+const usableOcrPages = computed(() => ocrDisplayPages.value.filter((item) =>
+  item.page && ['completed', 'low_confidence'].includes(item.page.status),
+).length)
 const ocrProgressMessage = computed(() => {
   const total = selectedImages.value.length
-  const completed = completedOcrPages.value
+  const settled = settledOcrPages.value
   if (!total) return '正在准备图片'
   if (ocrResult.value?.status === 'running' || isRecognizing.value) {
-    return completed < total
-      ? `正在识别第 ${completed + 1} / ${total} 页；已完成的页面现在就可以查看。`
+    return settled < total
+      ? `正在识别第 ${settled + 1} / ${total} 页；已处理的页面现在就可以查看。`
       : '正在整理识别结果。'
   }
-  return completed ? `已完成 ${completed} / ${total} 页识别，请检查文字后继续。` : '正在等待识别结果。'
+  return usableOcrPages.value
+    ? `已有 ${usableOcrPages.value} / ${total} 页可以校对，请检查文字后继续。`
+    : '暂时没有可校对的文字，请检查图片后重新识别。'
 })
 const activeCorrectionPage = computed(
   () => correctionResult.value?.pages[activeCorrectionPageIndex.value] ?? null,
@@ -586,9 +598,7 @@ const reportAnnotations = computed<ReviewAnnotationDetail[]>(() => {
   const severityRank = { high: 0, medium: 1, low: 2 }
   const sourceAnnotations = reportDeepAnalysis.value?.status === 'completed'
     ? reportDeepAnalysis.value.annotations
-    : isLegacyReport.value
-      ? reviewBatch.value?.reviews.flatMap((review) => review.annotations ?? []) ?? []
-      : []
+    : reviewBatch.value?.reviews.flatMap((review) => review.annotations ?? []) ?? []
   const ordered = deduplicateReportAnnotations(
     sourceAnnotations,
     reportEssayText.value,
@@ -979,7 +989,16 @@ function scrollReportAnnotationDirectory(annotationId: string): void {
 function scrollReportAnnotationText(annotationId: string): void {
   const target = [...document.querySelectorAll<HTMLElement>('[data-report-annotation-ids]')]
     .find((element) => element.dataset.reportAnnotationIds?.split(',').includes(annotationId))
-  target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  if (!target) return
+  const reader = target.closest<HTMLElement>('.report-source-pane')
+  if (!reader) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    return
+  }
+  const targetRect = target.getBoundingClientRect()
+  const readerRect = reader.getBoundingClientRect()
+  const top = reader.scrollTop + targetRect.top - readerRect.top - (reader.clientHeight - targetRect.height) / 2
+  reader.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
 }
 
 function emphasizeReportAnnotation(annotationId: string): void {
@@ -1002,8 +1021,8 @@ function selectReportAnnotation(
       scrollReportAnnotationText(annotation.id)
       emphasizeReportAnnotation(annotation.id)
     }
-    if (origin === 'text' && window.matchMedia('(max-width: 900px)').matches) {
-      document.querySelector<HTMLElement>('.annotation-teacher-note')
+    if (origin === 'text') {
+      document.querySelector<HTMLElement>('.annotation-learning')
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   })
@@ -1067,23 +1086,26 @@ function applyReviewBatch(batch: ReviewBatchResult): void {
 }
 
 function stopReviewPolling(): void {
+  reviewPollingGeneration += 1
   if (reviewPollingTimer !== null) {
-    clearInterval(reviewPollingTimer)
+    clearTimeout(reviewPollingTimer)
     reviewPollingTimer = null
   }
 }
 
 function stopDepthAnalysisPolling(): void {
+  depthAnalysisPollingGeneration += 1
   if (depthAnalysisPollingTimer !== null) {
-    clearInterval(depthAnalysisPollingTimer)
+    clearTimeout(depthAnalysisPollingTimer)
     depthAnalysisPollingTimer = null
   }
 }
 
-async function refreshDepthAnalysis(): Promise<void> {
+async function refreshDepthAnalysis(generation = depthAnalysisPollingGeneration): Promise<void> {
   if (!successResult.value || !reviewBatch.value?.final_evaluation) return
   try {
     const response = await apiFetch(`${apiBaseUrl}/api/essays/${successResult.value.id}/reports/latest`)
+    if (generation !== depthAnalysisPollingGeneration) return
     if (!response.ok) throw new Error('暂时无法更新深度评测进度')
     reviewBatch.value.final_evaluation = await response.json() as FinalEvaluationResult
     if (!deepAnalysisIsRunning.value) stopDepthAnalysisPolling()
@@ -1094,17 +1116,29 @@ async function refreshDepthAnalysis(): Promise<void> {
   }
 }
 
+function scheduleDepthAnalysisPoll(generation: number): void {
+  if (generation !== depthAnalysisPollingGeneration || !deepAnalysisIsRunning.value) return
+  depthAnalysisPollingTimer = setTimeout(async () => {
+    await refreshDepthAnalysis(generation)
+    scheduleDepthAnalysisPoll(generation)
+  }, 1800)
+}
+
 function startDepthAnalysisPolling(): void {
   if (!deepAnalysisIsRunning.value) return
   stopDepthAnalysisPolling()
-  void refreshDepthAnalysis()
-  depthAnalysisPollingTimer = setInterval(() => { void refreshDepthAnalysis() }, 1800)
+  const generation = depthAnalysisPollingGeneration
+  void (async () => {
+    await refreshDepthAnalysis(generation)
+    scheduleDepthAnalysisPoll(generation)
+  })()
 }
 
-async function refreshReviewProgress(): Promise<void> {
+async function refreshReviewProgress(generation = reviewPollingGeneration): Promise<void> {
   if (!successResult.value || !reviewBatch.value) return
   try {
     const response = await apiFetch(`${apiBaseUrl}/api/essays/${successResult.value.id}/reviews/batches`)
+    if (generation !== reviewPollingGeneration) return
     if (!response.ok) throw new Error('暂时无法更新评测进度')
     const batches = await response.json() as ReviewBatchResult[]
     const batch = batches.find((item) => item.id === reviewBatch.value?.id)
@@ -1139,12 +1173,23 @@ async function refreshReviewProgress(): Promise<void> {
   }
 }
 
+function scheduleReviewPoll(generation: number): void {
+  if (generation !== reviewPollingGeneration || reviewBatch.value?.status !== 'running') return
+  reviewPollingTimer = setTimeout(async () => {
+    await refreshReviewProgress(generation)
+    scheduleReviewPoll(generation)
+  }, 1500)
+}
+
 function startReviewPolling(): void {
   if (!reviewBatch.value || reviewBatch.value.status !== 'running') return
   isBatchReviewing.value = true
   stopReviewPolling()
-  void refreshReviewProgress()
-  reviewPollingTimer = setInterval(() => { void refreshReviewProgress() }, 1500)
+  const generation = reviewPollingGeneration
+  void (async () => {
+    await refreshReviewProgress(generation)
+    scheduleReviewPoll(generation)
+  })()
 }
 
 async function requestDeepAnalysis(): Promise<void> {
@@ -1430,7 +1475,7 @@ async function submitAuthentication(): Promise<void> {
       payload = {}
     }
     if (!response.ok || !payload.access_token || !payload.user) {
-      throw new Error(payload.detail ?? '暂时无法完成请求，请稍后重试。')
+      throw new Error(safeServerMessage(payload.detail, '暂时无法完成请求，请稍后重试。'))
     }
     authToken.value = payload.access_token
     localStorage.setItem('essay_access_token', payload.access_token)
@@ -1655,8 +1700,11 @@ function clearCorrectionResult(): void {
 }
 
 function clearReviewResult(): void {
+  stopReviewPolling()
   stopDepthAnalysisPolling()
+  reviewBatch.value = null
   reviewResult.value = null
+  isBatchReviewing.value = false
   reviewErrorMessage.value = ''
   selectedReportAnnotationId.value = null
   polishResult.value = null
@@ -1794,7 +1842,7 @@ function ocrPageLabel(status: OcrPageResult['status']): string {
 function ocrDisplayPageStatus(entry: { page: OcrPageResult | null; pageNumber: number }): string {
   if (entry.page?.id === retryingOcrPageId.value) return 'recognizing'
   if (entry.page) return entry.page.status
-  if (isRecognizing.value && entry.pageNumber === completedOcrPages.value + 1) return 'recognizing'
+  if (isRecognizing.value && entry.pageNumber === settledOcrPages.value + 1) return 'recognizing'
   return 'waiting'
 }
 
@@ -1897,6 +1945,29 @@ function growthTrendPolyline(trend: GrowthDimensionTrend): string {
   return trend.points
     .map((point, index) => `${growthTrendPointX(index, trend.points.length)},${growthTrendPointY(point)}`)
     .join(' ')
+}
+
+function growthOverallLatest(): GrowthDimensionPoint | null {
+  return growthSummary.value?.overall_trend?.points.at(-1) ?? null
+}
+
+function growthOverallPolyline(): string {
+  const points = growthSummary.value?.overall_trend?.points ?? []
+  return points
+    .map((point, index) => `${growthTrendPointX(index, points.length)},${growthTrendPointY(point)}`)
+    .join(' ')
+}
+
+function growthOverallStatus(): string {
+  const trend = growthSummary.value?.overall_trend
+  if (!trend || trend.points.length < 2) return '这是你的首次总分记录'
+  if (!growthSummary.value?.has_long_term_insights) {
+    if (trend.recent_change === null || Math.abs(trend.recent_change) < 0.1) return '最近两次总分基本稳定'
+    return `最近一次${trend.recent_change > 0 ? '提高' : '变化'} ${Math.abs(trend.recent_change)} 分`
+  }
+  if (trend.direction === 'improving') return `近期总分提升 ${Math.abs(trend.change ?? 0)} 分`
+  if (trend.direction === 'declining') return `近期总分有所波动 ${Math.abs(trend.change ?? 0)} 分`
+  return '近期总分表现基本稳定'
 }
 
 function growthTrendStatus(trend: GrowthDimensionTrend): string {
@@ -2271,9 +2342,8 @@ async function openHistoryEssay(item: Pick<EssayHistoryItem, 'id'>, preferredVie
         : undefined
     }))
     selectedImages.value = [...selectedImages.value]
-    const [batchesResponse, paddleOcrResponse, baiduOcrResponse, reportResponse] = await Promise.all([
+    const [batchesResponse, baiduOcrResponse, reportResponse] = await Promise.all([
       apiFetch(`${apiBaseUrl}/api/essays/${item.id}/reviews/batches`),
-      apiFetch(`${apiBaseUrl}/api/essays/${item.id}/ocr?engine=paddle`),
       apiFetch(`${apiBaseUrl}/api/essays/${item.id}/ocr?engine=baidu`),
       apiFetch(`${apiBaseUrl}/api/essays/${item.id}/reports/latest`),
     ])
@@ -2307,13 +2377,20 @@ async function openHistoryEssay(item: Pick<EssayHistoryItem, 'id'>, preferredVie
       startDepthAnalysisPolling()
     }
     ocrRuns.value = {}
-    if (paddleOcrResponse.ok) {
-      ocrRuns.value.paddle = await paddleOcrResponse.json() as OcrRunResult
-    }
     if (baiduOcrResponse.ok) {
       ocrRuns.value.baidu = await baiduOcrResponse.json() as OcrRunResult
     }
-    ocrResult.value = ocrRuns.value[selectedOcrEngine.value] ?? ocrRuns.value.paddle ?? ocrRuns.value.baidu ?? null
+    // Old reports may only have Paddle OCR results. Query them only after no
+    // Baidu run was found, so opening history never makes the normal path look
+    // like a provider switch or triggers an unnecessary request.
+    if (!ocrRuns.value.baidu) {
+      const paddleOcrResponse = await apiFetch(`${apiBaseUrl}/api/essays/${item.id}/ocr?engine=paddle`)
+      if (paddleOcrResponse.ok) {
+        ocrRuns.value.paddle = await paddleOcrResponse.json() as OcrRunResult
+      }
+    }
+    selectedOcrEngine.value = ocrRuns.value.baidu ? 'baidu' : 'paddle'
+    ocrResult.value = ocrRuns.value.baidu ?? ocrRuns.value.paddle ?? null
     if (ocrResult.value) {
       await openCorrection(false)
     } else {
@@ -2418,18 +2495,30 @@ async function recognizeEssay(essayId: string, engine: 'paddle' | 'baidu' = sele
 }
 
 function stopOcrPolling(): void {
+  ocrPollingGeneration += 1
   if (ocrPollingTimer !== null) {
-    clearInterval(ocrPollingTimer)
+    clearTimeout(ocrPollingTimer)
     ocrPollingTimer = null
   }
 }
 
-async function refreshOcrProgress(essayId: string, engine: 'paddle' | 'baidu'): Promise<void> {
+async function refreshOcrProgress(
+  essayId: string,
+  engine: 'paddle' | 'baidu',
+  generation = ocrPollingGeneration,
+): Promise<void> {
   try {
     const response = await apiFetch(`${apiBaseUrl}/api/essays/${essayId}/ocr?engine=${engine}`)
-    if (response.status === 404) return
+    if (generation !== ocrPollingGeneration) return
+    if (response.status === 404) {
+      isRecognizing.value = false
+      stopOcrPolling()
+      ocrErrorMessage.value = '没有找到正在进行的识别任务，请重新开始识别。已上传的图片仍然保留。'
+      return
+    }
     const payload = (await response.json()) as OcrRunResult & { detail?: string }
     if (!response.ok) throw new Error(safeServerMessage(payload.detail, '暂时无法更新识别进度'))
+    ocrErrorMessage.value = ''
     ocrResult.value = payload
     ocrRuns.value = { ...ocrRuns.value, [engine]: payload }
     if (payload.status !== 'running') {
@@ -2440,16 +2529,38 @@ async function refreshOcrProgress(essayId: string, engine: 'paddle' | 'baidu'): 
       }
     }
   } catch (error) {
+    if (generation !== ocrPollingGeneration) return
     // Keep the known page results visible. A transient polling failure must not
     // make the uploaded work disappear or turn a running OCR job into a failure.
     ocrErrorMessage.value = userFacingError(error, '暂时无法更新识别进度，系统仍在继续处理图片。')
   }
 }
 
+function scheduleOcrPoll(essayId: string, engine: 'paddle' | 'baidu', generation: number): void {
+  if (generation !== ocrPollingGeneration) return
+  ocrPollingTimer = setTimeout(async () => {
+    await refreshOcrProgress(essayId, engine, generation)
+    if (
+      generation === ocrPollingGeneration
+      && (ocrResult.value?.status === 'running' || isRecognizing.value)
+    ) {
+      scheduleOcrPoll(essayId, engine, generation)
+    }
+  }, 1200)
+}
+
 function startOcrPolling(essayId: string, engine: 'paddle' | 'baidu'): void {
   stopOcrPolling()
-  void refreshOcrProgress(essayId, engine)
-  ocrPollingTimer = setInterval(() => void refreshOcrProgress(essayId, engine), 800)
+  const generation = ocrPollingGeneration
+  void (async () => {
+    await refreshOcrProgress(essayId, engine, generation)
+    if (
+      generation === ocrPollingGeneration
+      && (ocrResult.value?.status === 'running' || isRecognizing.value)
+    ) {
+      scheduleOcrPoll(essayId, engine, generation)
+    }
+  })()
 }
 
 async function retryOcrPage(page: OcrPageResult): Promise<void> {
@@ -2465,6 +2576,12 @@ async function retryOcrPage(page: OcrPageResult): Promise<void> {
     if (!response.ok) throw new Error(safeServerMessage(payload.detail, '暂时无法重新识别这一页'))
     ocrResult.value = payload
     ocrRuns.value = { ...ocrRuns.value, [selectedOcrEngine.value]: payload }
+    if (payload.status === 'running') {
+      isRecognizing.value = true
+      startOcrPolling(successResult.value.id, selectedOcrEngine.value)
+    } else if (payload.status === 'failed') {
+      ocrErrorMessage.value = safeServerMessage(payload.error_message, '这一页暂时无法重新识别，请稍后再试')
+    }
   } catch (error) {
     ocrErrorMessage.value = userFacingError(error, '这一页暂时无法重新识别，请稍后再试。其他页面的结果仍然保留。')
   } finally {
@@ -2584,12 +2701,19 @@ async function exportReportPdf(): Promise<void> {
       const payload = await response.json().catch(() => ({})) as { detail?: string }
       throw new Error(safeServerMessage(payload.detail, '报告暂时无法导出，请稍后重试'))
     }
-    const url = URL.createObjectURL(await response.blob())
+    const blob = await response.blob()
+    if (!blob.size || !blob.type.includes('pdf')) {
+      throw new Error('生成的报告文件不完整，请稍后重试')
+    }
+    const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = 'essay-evaluation-report.pdf'
+    const safeTitle = (successResult.value.title || '作文').replace(/[\\/:*?"<>|]/g, '-').slice(0, 80)
+    anchor.download = `${safeTitle}-评测报告.pdf`
+    document.body.appendChild(anchor)
     anchor.click()
-    URL.revokeObjectURL(url)
+    anchor.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (error) {
     reviewErrorMessage.value = userFacingError(error, '报告暂时无法导出，请稍后重试')
   } finally {
@@ -2673,10 +2797,10 @@ onBeforeUnmount(() => {
             </template>
             <template v-else>
               <h1>交上作文，<br /><span>知道哪里好、下一步怎么改。</span></h1>
-              <p class="hero-lead">文衡从多个角度独立评阅作文，把重要反馈对应到原文；修改后再次评测，还能看见这一版具体进步了什么。</p>
+              <p class="hero-lead">文衡是面向学生的作文评测与写作提升工具。三路评审独立判断、比较分歧，再把重要反馈对应到原文。</p>
             </template>
             <ul class="hero-benefits" aria-label="文衡的核心价值">
-              <li><CheckCircle2 :size="19" /><span><strong>评得更可信</strong>多个独立判断经过比较再形成结果</span></li>
+              <li><CheckCircle2 :size="19" /><span><strong>评得更可信</strong>三路独立评分后综合，有明显分歧时再复核</span></li>
               <li><CheckCircle2 :size="19" /><span><strong>问题回到原文</strong>知道具体改哪里，也知道为什么</span></li>
               <li><CheckCircle2 :size="19" /><span><strong>修改看见进步</strong>再评后直接对照前后变化</span></li>
             </ul>
@@ -2692,39 +2816,30 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="capability-showcase" aria-labelledby="capability-title">
-          <div class="capability-heading">
-            <div><p class="eyebrow">一篇作文，一条清楚路径</p><h2 id="capability-title">从提交原稿，<br />到看见进步。</h2></div>
-            <p>识别、评阅和比较由系统完成，你只需要确认文字、读懂反馈，再决定怎么改。</p>
+        <section class="home-trust-story" aria-labelledby="trust-story-title">
+          <div class="home-trust-copy">
+            <p class="eyebrow">为什么不只问一个 AI</p>
+            <h2 id="trust-story-title">先独立判断，<br />再形成综合评分。</h2>
+            <p>不同评审各自阅读同一篇作文，彼此不参考答案。系统比较它们的共识与分歧，只有出现明显差异时才进一步复核。</p>
           </div>
-          <ol class="capability-list">
-            <li class="capability-item capability-item--capture">
-              <span class="capability-icon"><Camera :size="27" /></span>
-                <div><h3>提交作文</h3><p>手写稿可以拍照或从相册选择，电子稿也可以直接粘贴。</p></div>
-            </li>
-            <li class="capability-item capability-item--review">
-              <span class="capability-icon"><Sparkles :size="27" /></span>
-                <div><h3>可信评测</h3><p>多个独立判断经过比较，再形成更有依据的综合结果。</p></div>
-            </li>
-            <li class="capability-item capability-item--annotation">
-              <span class="capability-icon"><Edit3 :size="27" /></span>
-              <div><h3>逐句旁批</h3><p>问题直接对应原文句子，知道哪里需要改，也知道为什么要改。</p></div>
-            </li>
-            <li class="capability-item capability-item--growth">
-              <span class="capability-icon"><BarChart3 :size="27" /></span>
-                <div><h3>修改后再评</h3><p>对照反馈完成修改，再看分数、维度和问题发生了什么变化。</p></div>
-              </li>
-            </ol>
+          <ol class="home-trust-steps" aria-label="可信评测过程">
+            <li><span>01</span><div><strong>三路独立评审</strong><p>分别判断内容、结构、语言与书写表现。</p></div></li>
+            <li><span>02</span><div><strong>比较共识与分歧</strong><p>一致的判断相互印证，不同意见会被明确识别。</p></div></li>
+            <li><span>03</span><div><strong>必要时复核</strong><p>综合评分保留依据，也如实说明评审覆盖情况。</p></div></li>
+          </ol>
         </section>
 
-        <section class="home-process" aria-labelledby="process-title">
-          <div class="home-section-heading"><p class="eyebrow">开始一次评测</p><h2 id="process-title">提交、确认，然后查看反馈</h2><p>按页面提示完成即可。</p></div>
-          <ol class="process-list"><li><span>01</span><div><strong>提交作文</strong><p>拍照、从相册选择，或直接输入文字。</p></div></li><li><span>02</span><div><strong>确认原文</strong><p>手写稿识别后，只需检查文字是否准确。</p></div></li><li><span>03</span><div><strong>获得反馈</strong><p>先看分数、优点和最值得修改的问题。</p></div></li><li><span>04</span><div><strong>修改再评</strong><p>按照反馈修改，直接对照前后变化。</p></div></li></ol>
+        <section class="home-growth-story" aria-labelledby="growth-story-title">
+          <div class="home-growth-copy"><p class="eyebrow">评测不是终点</p><h2 id="growth-story-title">改过以后，能看见哪里真的进步了。</h2><p>拍照上传或粘贴作文后，反馈直接回到原句。完成修改再评，文衡会对照前后版本，并把真实变化积累成你的成长轨迹。</p></div>
+          <ol class="home-growth-steps">
+            <li><span><Camera :size="21" /></span><div><strong>提交并读懂反馈</strong><p>手写稿或电子稿都可以，先看最值得修改的地方。</p></div></li>
+            <li><span><Edit3 :size="21" /></span><div><strong>对照原文完成修改</strong><p>逐句定位问题，保留写得好的表达。</p></div></li>
+            <li><span><BarChart3 :size="21" /></span><div><strong>再评并记录成长</strong><p>比较总分、能力维度与问题变化。</p></div></li>
+          </ol>
         </section>
 
         <section class="privacy-band">
           <span><ShieldCheck :size="28" /></span><div><p class="eyebrow">隐私与保护</p><h2>你的作文，只属于你</h2><p>作文原稿、识别内容和评测记录仅对当前账号可见。</p></div>
-          <button class="primary-button" type="button" @click="startEssay('image')">{{ hasResumableEssay ? '继续当前评测' : '提交一篇作文' }}<ArrowRight :size="18" /></button>
         </section>
       </section>
 
@@ -2762,6 +2877,27 @@ onBeforeUnmount(() => {
               <div><strong>{{ growthSummary.work_count === 1 ? '第一份成长记录已经开始' : '成长轨迹正在形成' }}</strong><p>再完成 {{ growthSummary.additional_works_needed }} 篇不同作文的评测后，这里会逐渐形成更可靠的长期变化判断。</p></div>
             </div>
 
+            <section v-if="growthSummary.overall_trend?.points.length" class="growth-overall-section">
+              <div class="growth-section-heading"><div><p class="eyebrow">总分轨迹</p><h3>每次正式评测的真实变化</h3></div><p>按评测时间排列，包含同一篇作文的后续版本。</p></div>
+              <div class="growth-overall-chart">
+                <div class="growth-overall-summary">
+                  <span>最近一次</span>
+                  <strong>{{ growthOverallLatest()?.score }}<small>/ {{ growthOverallLatest()?.max_score }}</small></strong>
+                  <p>{{ growthOverallStatus() }}</p>
+                </div>
+                <div v-if="growthSummary.overall_trend.points.length > 1" class="growth-overall-plot">
+                  <svg viewBox="0 0 100 40" role="img" aria-label="历次作文综合评分变化" preserveAspectRatio="none">
+                    <line x1="5" y1="32" x2="95" y2="32" />
+                    <line x1="5" y1="19" x2="95" y2="19" />
+                    <polyline :points="growthOverallPolyline()" />
+                    <circle v-for="(point, index) in growthSummary.overall_trend.points" :key="`overall-${point.essay_id}`" :cx="growthTrendPointX(index, growthSummary.overall_trend.points.length)" :cy="growthTrendPointY(point)" r="1.55"><title>{{ point.title || '未命名作文' }} · {{ new Date(point.evaluated_at).toLocaleDateString('zh-CN') }}：{{ point.score }} / {{ point.max_score }}</title></circle>
+                  </svg>
+                  <div class="growth-overall-axis"><span>{{ new Date(growthSummary.overall_trend.points[0].evaluated_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) }}</span><span>{{ growthSummary.overall_trend.points.length }} 次评测</span><span>{{ new Date(growthSummary.overall_trend.points[growthSummary.overall_trend.points.length - 1].evaluated_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) }}</span></div>
+                </div>
+                <p v-else class="growth-overall-placeholder">再完成一次正式评测后，这里会连成你的总分轨迹。</p>
+              </div>
+            </section>
+
             <section v-if="growthSummary.dimension_trends.some((trend) => trend.points.length)" class="growth-trend-section">
               <div class="growth-section-heading"><div><p class="eyebrow">能力趋势</p><h3>{{ growthSummary.has_long_term_insights ? '不只看总分，也看每项能力' : '目前已有的能力记录' }}</h3></div><p>{{ growthSummary.has_long_term_insights ? '同一评分维度按评测时间排列。' : '当前数据只作记录，不作为长期强弱结论。' }}</p></div>
               <div class="growth-dimension-list">
@@ -2781,9 +2917,9 @@ onBeforeUnmount(() => {
             <section class="growth-pattern-section">
               <article>
                 <div class="growth-section-heading"><div><p class="eyebrow">最近反复出现</p><h3>值得持续留意的问题</h3></div></div>
-                <ul v-if="growthSummary.recurring_issues.length" class="growth-pattern-list">
-                  <li v-for="issue in growthSummary.recurring_issues" :key="`${issue.category}-${issue.issue_type}-${issue.label}`"><div><strong>{{ issue.label }}</strong><p>{{ issue.latest_statement }}</p></div><span>{{ issue.work_count }} 篇作品</span></li>
-                </ul>
+                <ol v-if="growthSummary.recurring_issues.length" class="growth-pattern-list growth-pattern-list--recurring">
+                  <li v-for="(issue, index) in growthSummary.recurring_issues" :key="`${issue.category}-${issue.issue_type}-${issue.label}`"><b>{{ index + 1 }}</b><div><strong>{{ issue.label }}</strong><p>{{ issue.latest_statement }}</p></div><span>{{ issue.work_count }} 篇作品</span></li>
+                </ol>
                 <p v-else class="growth-section-empty">{{ growthSummary.has_long_term_insights ? '最近没有发现跨多篇作文反复出现的同类问题。' : '作品数量还不足以判断哪些问题会反复出现。' }}</p>
               </article>
               <article>
@@ -2869,6 +3005,7 @@ onBeforeUnmount(() => {
       <section v-if="currentView === 'report'" class="report-view">
         <ol class="workflow-steps workflow-journey" aria-label="评测流程"><li v-for="(step, index) in workflowSteps" :key="step" :class="{ active: workflowStep === index + 1, done: workflowStep > index + 1 }"><span><Check v-if="workflowStep > index + 1" :size="13" /><template v-else>{{ index + 1 }}</template></span><strong>{{ step }}</strong></li></ol>
         <div class="page-heading product-heading report-page-heading"><div><p class="eyebrow">学习反馈 · {{ successResult ? revisionLabel(successResult.version_no) : '' }}</p><h1>{{ successResult?.title || '未命名作文' }}</h1><p>先看整体表现和最值得修改的一处。</p></div><div class="task-heading-actions"><label v-if="versionHistory && versionHistory.items.length > 1" class="report-version-switcher"><span>查看版本</span><select :value="successResult?.id" :disabled="isRestoringHistory" @change="void openVersionReport($event)"><option v-for="item in versionHistory.items" :key="item.id" :value="item.id">{{ revisionLabel(item.version_no) }}</option></select></label><button class="text-button" type="button" :disabled="isBusy" @click="startNewEssay('image')">开始新评测</button><button class="icon-text-button secondary-button" type="button" :disabled="isExportingReport" @click="void exportReportPdf"><Download :size="16" />{{ isExportingReport ? '正在生成' : '导出 PDF' }}</button></div></div>
+        <p v-if="reviewErrorMessage" class="review-error" role="alert">{{ reviewErrorMessage }}</p>
 
         <p v-if="isRestoringHistory && !reviewBatch?.final_evaluation" class="loading-state"><LoaderCircle :size="20" class="spin" />正在打开评测报告…</p>
         <div v-else-if="!reviewBatch?.final_evaluation" class="report-empty friendly-empty"><div class="empty-art-slot"><FileText :size="28" /></div><div><strong>暂时没有可查看的评测报告</strong><p>完成一次评测后，综合结果和修改建议会显示在这里。</p></div><button class="primary-button" type="button" @click="startNewEssay('image')">开始新评测</button></div>
@@ -2947,6 +3084,28 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </section>
+
+        <nav v-if="reviewBatch?.final_evaluation" class="report-reading-nav" aria-label="报告快速导航">
+          <span>建议先看</span>
+          <a href="#overall-feedback-title">完整总评</a>
+          <a v-if="reportAnnotations.length || !isLegacyReport" :href="reportAnnotations.length ? '#annotation-title' : '#deep-analysis-entry-title'">逐句旁批</a>
+          <a v-if="reportSuggestions.length" href="#priority-title">修改建议</a>
+          <button class="primary-button" type="button" @click="reviseEssay()"><Edit3 :size="16" />修改作文</button>
+        </nav>
+
+        <div v-if="reviewBatch?.final_evaluation" class="report-reading-layout">
+          <aside class="report-source-pane" aria-labelledby="report-source-title">
+            <div class="report-source-heading">
+              <div><p class="eyebrow">作文正文</p><h2 id="report-source-title">对照原文看反馈</h2></div>
+              <span v-if="reportAnnotations.length">{{ reportAnnotations.length }} 处旁批</span>
+            </div>
+            <div class="essay-reader-heading"><strong>{{ successResult?.title || '未命名作文' }}</strong><span v-if="reportAnnotations.length"><i></i>标记处可点击</span></div>
+            <div v-if="reportEssayText" class="annotated-essay-copy"><template v-for="(segment, index) in displayedAnnotatedEssaySegments" :key="`${index}-${segment.text.slice(0, 8)}`"><button v-if="segment.annotations.length" type="button" class="inline-annotation" :class="{ active: segment.annotations.some((annotation) => selectedReportAnnotation?.id === annotation.id), locating: segment.annotations.some((annotation) => emphasizedReportAnnotationId === annotation.id), grouped: segment.annotations.length > 1, strength: segment.annotations.some((annotation) => annotation.kind === 'strength'), fix: segment.annotations.some((annotation) => reportAnnotationDirection(annotation) === 'fix') }" :data-report-annotation-ids="segment.annotations.map((annotation) => annotation.id).join(',')" :aria-pressed="segment.annotations.some((annotation) => selectedReportAnnotation?.id === annotation.id)" :aria-label="segment.annotations.length > 1 ? `此处有 ${segment.annotations.length} 条逐句旁批：${segment.text}` : `查看逐句旁批：${segment.text}`" @click="selectReportAnnotation(segment.annotations.find((annotation) => annotation.id === selectedReportAnnotation?.id) ?? segment.annotations[0]!, 'text')">{{ segment.text }}<sup v-if="segment.annotations.length > 1" :title="`此处有 ${segment.annotations.length} 条不同角度的反馈`">{{ segment.annotations.length }}</sup></button><span v-else>{{ segment.text }}</span></template></div>
+            <p v-else class="report-source-empty">这份旧报告没有保存可显示的作文正文。</p>
+            <p v-if="!reportAnnotations.length" class="report-source-note">当前正文可以随时对照阅读；有可定位的逐句反馈后，相关文字会直接标记在这里。</p>
+          </aside>
+
+          <div class="report-feedback-stream">
 
         <section v-if="reviewBatch?.final_evaluation && !isLegacyReport" class="deep-analysis-entry" :class="`state-${deepAnalysisStatus}`" aria-labelledby="deep-analysis-entry-title">
           <div>
@@ -3056,13 +3215,9 @@ onBeforeUnmount(() => {
           <ol class="basic-issue-list"><li v-for="(issue, index) in reportBasicExpressionIssues" :key="`${issue.quote}-${issue.comment}-${index}`"><span>{{ basicIssueTypeLabel(issue.issue_type) }}</span><div><blockquote>“{{ issue.quote }}”</blockquote><strong>{{ issue.comment }}</strong><p>{{ issue.suggestion }}</p></div><button v-if="reportAnnotations.some((annotation) => annotation.evidence_text === issue.quote)" class="text-button" type="button" @click="locateBasicExpressionIssue(issue)">查看原文</button></li></ol>
         </section>
 
-        <section v-if="reportEssayText && deepAnalysisAvailable" class="annotation-learning" aria-labelledby="annotation-title">
+        <section v-if="reportEssayText && reportAnnotations.length" class="annotation-learning" aria-labelledby="annotation-title">
           <div class="report-section-heading"><div><p class="eyebrow">逐句旁批</p><h2 id="annotation-title">每一条反馈，都能回到原文</h2><p>所有有批注的句子都已标记。选择一条旁批，即可聚焦查看对应原文；手写作文还可以回到原稿位置。</p></div><span>逐句旁批 · 共 {{ reportAnnotations.length }} 条</span></div>
-          <div class="annotation-workspace">
-            <article class="annotated-essay-reader">
-              <div class="essay-reader-heading"><strong>作文原文</strong><span><i></i>有逐句旁批的文字</span></div>
-              <div class="annotated-essay-copy"><template v-for="(segment, index) in displayedAnnotatedEssaySegments" :key="`${index}-${segment.text.slice(0, 8)}`"><button v-if="segment.annotations.length" type="button" class="inline-annotation" :class="{ active: segment.annotations.some((annotation) => selectedReportAnnotation?.id === annotation.id), locating: segment.annotations.some((annotation) => emphasizedReportAnnotationId === annotation.id), grouped: segment.annotations.length > 1, strength: segment.annotations.some((annotation) => annotation.kind === 'strength'), fix: segment.annotations.some((annotation) => reportAnnotationDirection(annotation) === 'fix') }" :data-report-annotation-ids="segment.annotations.map((annotation) => annotation.id).join(',')" :aria-pressed="segment.annotations.some((annotation) => selectedReportAnnotation?.id === annotation.id)" :aria-label="segment.annotations.length > 1 ? `此处有 ${segment.annotations.length} 条逐句旁批：${segment.text}` : `查看逐句旁批：${segment.text}`" @click="selectReportAnnotation(segment.annotations.find((annotation) => annotation.id === selectedReportAnnotation?.id) ?? segment.annotations[0]!, 'text')">{{ segment.text }}<sup v-if="segment.annotations.length > 1" :title="`此处有 ${segment.annotations.length} 条不同角度的反馈`">{{ segment.annotations.length }}</sup></button><span v-else>{{ segment.text }}</span></template></div>
-            </article>
+          <div class="annotation-workspace annotation-workspace--feedback-only">
             <aside class="annotation-sidebar" aria-label="逐句旁批列表与详情">
               <template v-if="selectedReportAnnotation">
                 <nav class="annotation-directory" aria-label="全部逐句旁批">
@@ -3097,6 +3252,9 @@ onBeforeUnmount(() => {
           </div>
           <div v-else class="polish-intro"><span><Sparkles :size="28" /></span><div><strong>润色会做什么</strong><p>改善用词、句子衔接和表达清晰度，同时保留你的内容、结构和写作语气。</p></div></div>
         </section>
+
+          </div>
+        </div>
 
         <div v-if="reviewBatch?.final_evaluation" class="report-next-actions"><div><p class="eyebrow">下一步</p><h2>根据反馈修改作文</h2><p>修改后再次评测，会作为同一篇作文的新版本保存并显示前后变化。</p></div><div><button class="primary-button" type="button" @click="reviseEssay()"><Edit3 :size="18" />修改作文</button><button class="secondary-button" type="button" :disabled="isBatchReviewing" @click="void rerunCurrentVersion"><RotateCcw :size="17" />{{ isBatchReviewing ? '正在重新评测' : '重新评测当前版本' }}</button></div></div>
       </section>
@@ -3234,10 +3392,11 @@ onBeforeUnmount(() => {
               v-if="ocrResult && ocrResult.total_blocks"
               class="icon-text-button secondary-button"
               type="button"
-              :disabled="isLoadingCorrection"
+              :disabled="isLoadingCorrection || ocrResult.status === 'running'"
+              :title="ocrResult.status === 'running' ? '请等待所有页面处理完成后再校对' : undefined"
               @click="void openCorrection()"
             >
-              <Edit3 :size="16" />{{ correctionResult ? '打开校对' : '开始校对' }}
+              <Edit3 :size="16" />{{ ocrResult.status === 'running' ? '正在处理页面' : correctionResult ? '打开校对' : '开始校对' }}
             </button>
           </div>
         </div>
@@ -3250,7 +3409,8 @@ onBeforeUnmount(() => {
 
         <template v-if="ocrResult">
           <div class="ocr-summary">
-            <span>已完成 {{ completedOcrPages }} / {{ selectedImages.length }} 页</span>
+            <span>已处理 {{ settledOcrPages }} / {{ selectedImages.length }} 页</span>
+            <span>{{ usableOcrPages }} 页可以校对</span>
             <span>已找到 {{ ocrResult.total_blocks }} 个文字区域</span>
           </div>
           <p v-if="ocrResult.error_message" class="ocr-run-message">{{ ocrResult.error_message }}</p>

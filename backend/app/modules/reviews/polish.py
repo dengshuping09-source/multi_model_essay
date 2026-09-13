@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-import json
+import asyncio
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+import logging
+from time import perf_counter
 from typing import Any, Literal
 
 import httpx
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import settings
-from app.modules.reviews.contracts import EssayPolishOutput
+from app.modules.reviews.contracts import EssayPolishOutput, parse_json_object
+
+
+logger = logging.getLogger(__name__)
 
 
 class PolishGenerationError(RuntimeError):
@@ -26,10 +31,12 @@ class PolishResponseFormatError(PolishGenerationError):
 
 @dataclass(frozen=True)
 class PolishBackend:
+    key: str
     style: Literal["chat", "responses"]
     endpoint: str
     model: str
     api_key: SecretStr
+    disable_thinking: bool = False
 
 
 POLISH_SYSTEM_PROMPT = """你是一位耐心的中小学语文老师。请在保留学生原意、事实、结构和个人语气的前提下，对作文做克制的表达润色。
@@ -74,6 +81,7 @@ def _configured_backends() -> list[PolishBackend]:
     if settings.deepseek_api_key is not None:
         backends.append(
             PolishBackend(
+                key="deepseek",
                 style="chat",
                 endpoint=_chat_endpoint(settings.deepseek_base_url, settings.deepseek_api_url),
                 model=settings.deepseek_model,
@@ -83,6 +91,7 @@ def _configured_backends() -> list[PolishBackend]:
     if settings.qwen_api_key is not None:
         backends.append(
             PolishBackend(
+                key="qwen",
                 style="chat",
                 endpoint=_chat_endpoint(settings.qwen_base_url),
                 model=settings.qwen_model,
@@ -94,10 +103,12 @@ def _configured_backends() -> list[PolishBackend]:
     if doubao_key is not None and doubao_base_url:
         backends.append(
             PolishBackend(
-                style="responses",
-                endpoint=_responses_endpoint(doubao_base_url),
-                model=settings.ark_model if settings.ark_api_key is not None else settings.doubao_model,
+                key="doubao",
+                style="chat",
+                endpoint=_chat_endpoint(doubao_base_url),
+                model=settings.ark_deep_model if settings.ark_api_key is not None else settings.doubao_model,
                 api_key=doubao_key,
+                disable_thinking=settings.ark_api_key is not None,
             )
         )
     return backends
@@ -152,6 +163,64 @@ def validate_polish(original_text: str, output: EssayPolishOutput) -> EssayPolis
     return output.model_copy(update={"polished_text": polished})
 
 
+async def _request_polish(
+    backend: PolishBackend,
+    essay_text: str,
+    user_prompt: str,
+) -> EssayPolishOutput:
+    payload: dict[str, Any] = {
+        "model": backend.model,
+        "messages": [
+            {"role": "system", "content": POLISH_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": settings.deepseek_max_output_tokens,
+        "temperature": 0.2,
+        "stream": False,
+    }
+    if backend.disable_thinking:
+        payload["thinking"] = {"type": "disabled"}
+    started_at = perf_counter()
+    logger.info(
+        "polish_provider_started provider=%s model=%s essay_chars=%d",
+        backend.key,
+        backend.model,
+        len(essay_text),
+    )
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(settings.model_review_timeout_seconds, connect=10.0)
+        ) as client:
+            response = await client.post(
+                backend.endpoint,
+                headers={"Authorization": f"Bearer {backend.api_key.get_secret_value()}"},
+                json=payload,
+            )
+        if response.is_error:
+            raise PolishGenerationError("润色请求暂未完成")
+        response_data: dict[str, Any] = response.json()
+        content = _strip_code_fence(_extract_json_text(response_data, backend.style))
+        output = EssayPolishOutput.model_validate(parse_json_object(content))
+        validated = validate_polish(essay_text, output)
+    except httpx.TimeoutException as exc:
+        raise PolishGenerationError("润色生成超时，请稍后重试") from exc
+    except httpx.HTTPError as exc:
+        raise PolishGenerationError("润色服务暂时无法连接") from exc
+    except PolishGenerationError:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
+        raise PolishResponseFormatError("润色结果格式不完整，请稍后重试") from exc
+    logger.info(
+        "polish_provider_completed provider=%s model=%s elapsed_ms=%d changes=%d",
+        backend.key,
+        backend.model,
+        round((perf_counter() - started_at) * 1000),
+        len(validated.changes),
+    )
+    return validated
+
+
 async def generate_polish(
     essay_text: str,
     summary: str | None,
@@ -167,51 +236,20 @@ async def generate_polish(
         f"优先建议：\n{guidance}\n\n"
         f"学生原文：\n{essay_text}"
     )
-    last_error: PolishGenerationError | None = None
-    for backend in backends:
-        if backend.style == "chat":
-            payload = {
-                "model": backend.model,
-                "messages": [
-                    {"role": "system", "content": POLISH_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "response_format": {"type": "json_object"},
-                "max_tokens": settings.deepseek_max_output_tokens,
-                "temperature": 0.2,
-                "stream": False,
-            }
-        else:
-            payload = {
-                "model": backend.model,
-                "instructions": POLISH_SYSTEM_PROMPT,
-                "input": user_prompt,
-                "max_output_tokens": settings.deepseek_max_output_tokens,
-                "temperature": 0.2,
-                "store": False,
-            }
-
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(settings.model_review_timeout_seconds, connect=10.0)
-            ) as client:
-                response = await client.post(
-                    backend.endpoint,
-                    headers={"Authorization": f"Bearer {backend.api_key.get_secret_value()}"},
-                    json=payload,
-                )
-            if response.is_error:
-                last_error = PolishGenerationError("润色请求暂未完成")
-                continue
-            response_data: dict[str, Any] = response.json()
-            content = _strip_code_fence(_extract_json_text(response_data, backend.style))
-            output = EssayPolishOutput.model_validate(json.loads(content))
-            return validate_polish(essay_text, output)
-        except httpx.TimeoutException:
-            last_error = PolishGenerationError("润色生成超时，请稍后重试")
-        except httpx.HTTPError:
-            last_error = PolishGenerationError("润色服务暂时无法连接")
-        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError, ValidationError):
-            last_error = PolishResponseFormatError("润色结果格式不完整，请稍后重试")
-
-    raise last_error or PolishGenerationError("润色暂未完成，请稍后重试")
+    tasks = [
+        asyncio.create_task(_request_polish(backend, essay_text, user_prompt))
+        for backend in backends
+    ]
+    errors: list[PolishGenerationError] = []
+    try:
+        for completed in asyncio.as_completed(tasks):
+            try:
+                return await completed
+            except PolishGenerationError as exc:
+                errors.append(exc)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    raise errors[-1] if errors else PolishGenerationError("润色暂未完成，请稍后重试")

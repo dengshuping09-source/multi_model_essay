@@ -4,9 +4,11 @@ from decimal import Decimal
 
 import logging
 
+from anyio import to_thread
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import CurrentUser
 from app.db.models import FinalEvaluation, ModelReview, ReferenceAssessment, ReviewBatch, ReviewRecheck, ReviewStatus
@@ -275,7 +277,7 @@ async def create_deepseek_review(
     session: AsyncSession = Depends(get_db_session),
 ) -> ModelReviewResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     try:
         review = await run_deepseek_review(session, essay_id)
     except EssayNotFoundForReviewError as exc:
@@ -300,7 +302,7 @@ async def list_essay_reviews(
     session: AsyncSession = Depends(get_db_session),
 ) -> ModelReviewListResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     return ModelReviewListResponse(items=[_review_response(item) for item in await get_essay_reviews(session, essay_id)])
 
 
@@ -313,7 +315,7 @@ async def create_review_batch(
     session: AsyncSession = Depends(get_db_session),
 ) -> ReviewBatchResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     try:
         running_batch_id = await session.scalar(
             select(ReviewBatch.id)
@@ -343,7 +345,7 @@ async def list_review_batches(
     session: AsyncSession = Depends(get_db_session),
 ) -> list[ReviewBatchResponse]:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     return [await _batch_response(session, batch) for batch in await get_essay_review_batches(session, essay_id)]
 
 
@@ -356,10 +358,10 @@ async def retry_review_batch(
     session: AsyncSession = Depends(get_db_session),
 ) -> ReviewBatchResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     previous = await get_review_batch(session, batch_id)
     if previous.essay_id != essay_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review batch does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="评测任务不存在")
     running_batch_id = await session.scalar(
         select(ReviewBatch.id)
         .where(ReviewBatch.essay_id == essay_id, ReviewBatch.status == ReviewStatus.RUNNING)
@@ -389,7 +391,7 @@ async def run_cross_check(
     session: AsyncSession = Depends(get_db_session),
 ) -> ReviewRecheckResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     try:
         recheck = await execute_review_recheck(session, essay_id, recheck_id)
     except ReviewRecheckNotFoundError as exc:
@@ -406,10 +408,10 @@ async def latest_report(
     session: AsyncSession = Depends(get_db_session),
 ) -> FinalEvaluationResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     final = await get_latest_final_evaluation(session, essay_id)
     if final is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No final report is available")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="这篇作文还没有可查看的评测报告")
     return _final_response(final)
 
 
@@ -425,7 +427,7 @@ async def start_deep_analysis(
     session: AsyncSession = Depends(get_db_session),
 ) -> FinalEvaluationResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     try:
         final, should_start = await request_deep_analysis(session, essay_id)
     except DeepAnalysisNotFoundError as exc:
@@ -443,10 +445,13 @@ async def polish_latest_report(
     session: AsyncSession = Depends(get_db_session),
 ) -> EssayPolishResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     final = await get_latest_final_evaluation(session, essay_id)
     if final is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请先完成作文评测")
+    stored = _stored_polish(final)
+    if stored is not None and not regenerate:
+        return stored
     try:
         final_text = await get_final_essay_text(session, essay_id)
         priority_rank = {"high": 0, "medium": 1, "low": 2}
@@ -477,6 +482,11 @@ async def polish_latest_report(
         overview=result.overview,
         changes=result.changes,
     )
+    config = dict(final.aggregation_config) if isinstance(final.aggregation_config, dict) else {}
+    config["polish"] = response.model_dump(mode="json")
+    final.aggregation_config = config
+    flag_modified(final, "aggregation_config")
+    await session.commit()
     return response
 
 
@@ -488,10 +498,10 @@ async def export_latest_report_pdf(
 ) -> Response:
     essay = await get_owned_essay(session, essay_id, user)
     if essay is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     final = await get_latest_final_evaluation(session, essay_id)
     if final is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No final report is available")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="这篇作文还没有可导出的评测报告")
     rechecks = list(
         (
             await session.scalars(
@@ -515,7 +525,8 @@ async def export_latest_report_pdf(
         for recheck in rechecks
     ]
     try:
-        content = build_report_pdf(
+        content = await to_thread.run_sync(
+            build_report_pdf,
             essay,
             final,
             [link.model_review for link in final.review_links],
@@ -524,12 +535,23 @@ async def export_latest_report_pdf(
     except ImportError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="PDF export dependency is not installed. Install backend requirements and restart the backend.",
+            detail="报告导出组件暂不可用，请联系管理员处理。",
+        ) from exc
+    except Exception as exc:
+        logger.exception("PDF report generation failed", extra={"essay_id": str(essay_id)})
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="报告暂时无法生成，请稍后重试。",
         ) from exc
     return Response(
         content=content,
         media_type="application/pdf",
-        headers={"Content-Disposition": 'attachment; filename="essay-evaluation-report.pdf"'},
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="wenheng-report.pdf"; '
+                "filename*=UTF-8''%E6%96%87%E8%A1%A1%E4%BD%9C%E6%96%87%E8%AF%84%E6%B5%8B%E6%8A%A5%E5%91%8A.pdf"
+            )
+        },
     )
 
 
@@ -541,7 +563,7 @@ async def save_reference_assessment(
     session: AsyncSession = Depends(get_db_session),
 ) -> ReferenceAssessmentResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     assessment = ReferenceAssessment(
         essay_id=essay_id,
         recorded_by_user_id=user.id,

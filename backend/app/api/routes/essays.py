@@ -28,6 +28,7 @@ from app.modules.ocr.service import (
     retry_ocr_page,
     run_essay_ocr,
 )
+from app.modules.ocr.engine import get_default_ocr_engine_key
 from app.modules.ocr.engine import OcrEngineKey
 from app.modules.ocr.correction_service import (
     InvalidOcrBlockError,
@@ -399,7 +400,7 @@ async def list_essay_versions(
 ) -> EssayVersionHistoryResponse:
     current = await get_owned_essay(session, essay_id, user)
     if current is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     versions = list(
         (
             await session.scalars(
@@ -495,7 +496,7 @@ async def compare_with_previous_version(
 async def get_essay(essay_id: UUID, user: CurrentUser, session: AsyncSession = Depends(get_db_session)) -> EssaySubmissionResponse:
     essay = await get_owned_essay(session, essay_id, user)
     if essay is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     return _essay_response(essay)
 
 
@@ -522,13 +523,14 @@ async def delete_temporary_essay(
 async def recognize_essay(
     essay_id: UUID,
     background_tasks: BackgroundTasks,
-    engine: OcrEngineKey = Query(default="paddle"),
+    engine: OcrEngineKey | None = Query(default=None),
     progressive: bool = Query(default=False),
     user: CurrentUser = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> OcrRunResponse:
+    engine = engine or get_default_ocr_engine_key()
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     try:
         if progressive or settings.ocr_worker_enabled:
             existing = await get_latest_ocr_run(session, essay_id, engine_key=engine)
@@ -554,12 +556,13 @@ async def recognize_essay(
 @router.get("/{essay_id}/ocr", response_model=OcrRunResponse)
 async def get_essay_ocr(
     essay_id: UUID,
-    engine: OcrEngineKey = Query(default="paddle"),
+    engine: OcrEngineKey | None = Query(default=None),
     user: CurrentUser = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> OcrRunResponse:
+    engine = engine or get_default_ocr_engine_key()
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     run = await get_latest_ocr_run(session, essay_id, engine_key=engine)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="尚无 OCR 识别结果")
@@ -575,7 +578,7 @@ async def retry_essay_ocr_page(
     session: AsyncSession = Depends(get_db_session),
 ) -> OcrRunResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     try:
         return _ocr_response(
             await retry_ocr_page(
@@ -600,7 +603,7 @@ async def get_ocr_correction(
     session: AsyncSession = Depends(get_db_session),
 ) -> OcrCorrectionResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     try:
         correction, run = await get_or_create_correction(session, essay_id, ocr_run_id)
     except OcrCorrectionUnavailableError as exc:
@@ -617,7 +620,7 @@ async def save_ocr_correction(
     session: AsyncSession = Depends(get_db_session),
 ) -> OcrCorrectionResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     updates = {item.ocr_block_id: item.corrected_text for item in payload.blocks}
     if len(updates) != len(payload.blocks):
         raise HTTPException(
@@ -641,7 +644,7 @@ async def confirm_ocr_correction(
     session: AsyncSession = Depends(get_db_session),
 ) -> OcrCorrectionResponse:
     if await get_owned_essay(session, essay_id, user) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Essay does not exist")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="作文不存在")
     try:
         correction, run = await confirm_correction(session, essay_id, ocr_run_id)
     except OcrCorrectionUnavailableError as exc:

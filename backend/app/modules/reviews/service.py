@@ -110,7 +110,7 @@ async def get_final_essay_text(session: AsyncSession, essay_id: UUID) -> FinalEs
         .options(selectinload(Essay.ocr_corrections))
     )
     if essay is None:
-        raise EssayNotFoundForReviewError("Essay does not exist")
+        raise EssayNotFoundForReviewError("作文不存在")
 
     confirmed_corrections = [
         correction
@@ -563,14 +563,14 @@ async def start_review_batch(
     final_text = await get_final_essay_text(session, essay_id)
     essay = await session.get(Essay, essay_id)
     if essay is None:
-        raise EssayNotFoundForReviewError("Essay does not exist")
+        raise EssayNotFoundForReviewError("作文不存在")
     registry = get_review_provider_registry()
     requested = list(dict.fromkeys(provider_keys or ["deepseek", "qwen", "doubao"]))
     unknown = [key for key in requested if key not in registry]
     if unknown:
-        raise ValueError(f"Unknown review provider: {unknown[0]}")
+        raise ValueError(f"不支持的评审来源：{unknown[0]}")
     if review_mode not in REVIEW_MODES:
-        raise ValueError("Unknown review mode")
+        raise ValueError("不支持的评测方式")
     batch = ReviewBatch(
         essay_id=essay_id,
         requested_providers=requested,
@@ -621,7 +621,7 @@ async def execute_started_review_batch(
 
     essay = await session.get(Essay, batch.essay_id)
     if essay is None:
-        raise EssayNotFoundForReviewError("Essay does not exist")
+        raise EssayNotFoundForReviewError("作文不存在")
     registry = get_review_provider_registry()
     final_text = FinalEssayText(text=batch.evaluated_text, source=batch.text_source)
     context = EssayReviewContext(essay.grade_level, essay.genre, essay.writing_prompt, essay.full_score)
@@ -1137,15 +1137,15 @@ async def execute_review_recheck(
         .where(ReviewRecheck.id == recheck_id, ReviewBatch.essay_id == essay_id)
     )
     if recheck is None:
-        raise ReviewRecheckNotFoundError("Review recheck does not exist")
+        raise ReviewRecheckNotFoundError("复核记录不存在")
     if recheck.status is RecheckStatus.RUNNING:
-        raise ReviewRecheckUnavailableError("Review recheck is already running")
+        raise ReviewRecheckUnavailableError("复核正在进行，请稍候")
     if recheck.status is RecheckStatus.COMPLETED:
         return recheck
 
     recheck.status = RecheckStatus.RUNNING
     recheck.started_at = datetime.now(timezone.utc)
-    recheck.result_summary = "Cross-check review is running."
+    recheck.result_summary = "正在比较不同评审意见。"
     await session.commit()
     logger.info(
         "review_recheck_started recheck_id=%s essay_id=%s requested=%d",
@@ -1176,7 +1176,7 @@ async def execute_review_recheck(
         recheck.completed_at = datetime.now(timezone.utc)
         if resolved_final is None or resolved_final.status is ReviewStatus.FAILED:
             recheck.status = RecheckStatus.FAILED
-            recheck.result_summary = "Cross-check completed without a usable structured result."
+            recheck.result_summary = "本次复核未形成可用结果，原综合结论仍然保留。"
         else:
             recheck.status = RecheckStatus.COMPLETED
             baseline_score = (
@@ -1190,8 +1190,8 @@ async def execute_review_recheck(
                 else None
             )
             recheck.result_summary = (
-                f"Cross-check completed: baseline {baseline_score if baseline_score is not None else '--'}, "
-                f"recheck {resolved_score if resolved_score is not None else '--'}."
+                f"复核已完成：复核前 {baseline_score if baseline_score is not None else '--'} 分，"
+                f"复核后 {resolved_score if resolved_score is not None else '--'} 分。"
             )
         await session.commit()
     except (FinalEssayTextUnavailableError, ValueError) as exc:
@@ -1215,7 +1215,7 @@ async def get_review_batch(session: AsyncSession, batch_id: UUID) -> ReviewBatch
         .options(selectinload(ReviewBatch.reviews).selectinload(ModelReview.annotations).selectinload(AIAnnotation.ocr_block), selectinload(ReviewBatch.rechecks))
     )
     if batch is None:
-        raise RuntimeError("Review batch does not exist")
+        raise RuntimeError("评测任务不存在")
     return batch
 
 

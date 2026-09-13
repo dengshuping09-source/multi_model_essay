@@ -1,7 +1,10 @@
+import asyncio
+
 import pytest
 
 from app.modules.reviews.contracts import EssayPolishOutput, PolishChange
-from app.modules.reviews.polish import PolishResponseFormatError, validate_polish
+from app.modules.reviews import polish
+from app.modules.reviews.polish import PolishGenerationError, PolishResponseFormatError, validate_polish
 
 
 ORIGINAL = "雨停了，我走进巷子。地上的水很亮，我慢慢走回家。"
@@ -64,3 +67,33 @@ def test_validate_polish_rejects_untraceable_change() -> None:
 
     with pytest.raises(PolishResponseFormatError):
         validate_polish(ORIGINAL, output)
+
+
+def test_generate_polish_uses_first_success_without_waiting_for_failed_backend(monkeypatch) -> None:
+    successful = EssayPolishOutput(
+        polished_text="雨停了，我走进安静的巷子。地上的水很亮，我慢慢走回家。",
+        overview="补充了环境特点。",
+        changes=[
+            PolishChange(
+                original="巷子",
+                revised="安静的巷子",
+                reason="画面更清楚。",
+                category="detail",
+            )
+        ],
+    )
+    backends = [object(), object()]
+
+    async def fake_request(backend, essay_text, user_prompt):
+        assert essay_text == ORIGINAL
+        assert "学生原文" in user_prompt
+        if backend is backends[0]:
+            await asyncio.sleep(0.01)
+            raise PolishGenerationError("暂时不可用")
+        await asyncio.sleep(0.02)
+        return successful
+
+    monkeypatch.setattr(polish, "_configured_backends", lambda: backends)
+    monkeypatch.setattr(polish, "_request_polish", fake_request)
+
+    assert asyncio.run(polish.generate_polish(ORIGINAL, "总评", ["补充细节"])) == successful

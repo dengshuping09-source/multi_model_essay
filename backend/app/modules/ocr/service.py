@@ -29,7 +29,14 @@ from app.db.models import (
     OcrRunStatus,
     SourceType,
 )
-from app.modules.ocr.engine import OcrEngine, OcrEngineKey, RecognizedRegion, get_ocr_engine
+from app.modules.ocr.baidu import user_facing_baidu_error
+from app.modules.ocr.engine import (
+    OcrEngine,
+    OcrEngineKey,
+    RecognizedRegion,
+    get_default_ocr_engine_key,
+    get_ocr_engine,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -160,13 +167,14 @@ async def run_essay_ocr(
     session: AsyncSession,
     essay_id: UUID,
     engine: OcrEngine | None = None,
-    engine_key: OcrEngineKey = "paddle",
+    engine_key: OcrEngineKey | None = None,
     *,
     run_id: UUID | None = None,
     source_ids: set[UUID] | None = None,
     defer_execution: bool = False,
 ) -> OcrRun:
     ocr_started = perf_counter()
+    engine_key = engine_key or get_default_ocr_engine_key()
     essay = await _load_essay(session, essay_id)
     if essay is None:
         raise EssayNotFoundError
@@ -179,7 +187,7 @@ async def run_essay_ocr(
     if not image_sources:
         raise EssayHasNoImagesError
 
-    selected_engine = engine or (get_ocr_engine() if engine_key == "paddle" else get_ocr_engine(engine_key))
+    selected_engine = engine or get_ocr_engine(engine_key)
     if run_id is None:
         running = await session.scalar(
             select(OcrRun.id).where(
@@ -306,7 +314,7 @@ async def run_essay_ocr(
                     for block_index, region in enumerate(regions)
                 ],
             )
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "OCR page recognition failed",
                 extra={"essay_id": str(essay_id), "source_id": str(source.id), "page_number": page_number},
@@ -321,7 +329,11 @@ async def run_essay_ocr(
                 input_width=ocr_input.width,
                 input_height=ocr_input.height,
                 input_to_original_matrix=ocr_input.input_to_original_matrix,
-                error_message="当前页面暂时无法识别，请重试；如果仍然失败，请重新拍摄或上传更清晰的图片",
+                error_message=(
+                    user_facing_baidu_error(exc)
+                    if engine_key == "baidu"
+                    else "当前页面暂时无法识别，请重新识别；如果仍然失败，请重新拍摄或上传更清晰的图片。"
+                ),
             )
         session.add(page)
         pages.append(page)
@@ -361,7 +373,12 @@ async def run_essay_ocr(
         run.error_message = "部分页面未完成正常识别，请根据逐页提示检查"
     else:
         run.status = OcrRunStatus.FAILED
-        run.error_message = "没有识别到可用的作文文字"
+        # Keep the first safe page-level cause (such as configuration, timeout
+        # or a provider quota) instead of hiding it behind a generic failure.
+        run.error_message = next(
+            (page.error_message for page in pages if page.error_message),
+            "没有识别到可用的作文文字，请重新识别或换一张更清晰的图片。",
+        )
     run.completed_at = datetime.now(timezone.utc)
     if run.combined_text:
         essay.status = EssayStatus.READY

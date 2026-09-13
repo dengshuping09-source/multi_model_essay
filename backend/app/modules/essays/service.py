@@ -250,7 +250,7 @@ async def submit_essay(
             f"作文内容不能超过 {settings.max_essay_text_length} 个字符"
         )
     if full_score < 1 or full_score > 1000:
-        raise UploadValidationError("The full score must be between 1 and 1000")
+        raise UploadValidationError("作文满分必须在 1 到 1000 之间")
     if len(images) > settings.max_upload_files:
         raise UploadValidationError(f"一次最多上传 {settings.max_upload_files} 张图片")
 

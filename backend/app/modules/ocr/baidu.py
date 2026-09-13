@@ -18,6 +18,30 @@ class BaiduOcrError(RuntimeError):
     pass
 
 
+def user_facing_baidu_error(error: Exception) -> str:
+    """Convert provider failures to a retryable message for students.
+
+    Keep provider responses, HTTP details and credentials out of the API while
+    preserving enough distinction for a useful next action.
+    """
+    message = str(error).lower()
+    if "credentials are not configured" in message:
+        return "文字识别服务尚未配置完成，请联系管理员后再试。"
+    if "timed out" in message:
+        return "文字识别服务响应较慢，请稍后重新识别这一页。"
+    if "could not be completed" in message:
+        return "暂时无法连接文字识别服务，请检查网络后重新识别这一页。"
+    if "input exceeds" in message:
+        return "这张图片过大，暂时无法识别。请重新拍摄或选择更清晰的图片。"
+    if "error 17" in message:
+        return "文字识别服务今日可用次数已用完，请稍后再试。"
+    if "error 18" in message:
+        return "文字识别服务当前较忙，请稍后重新识别这一页。"
+    if "error 6" in message or "error 110" in message:
+        return "文字识别服务暂时不可用，请联系管理员后再试。"
+    return "当前页面暂时无法识别，请重新识别；如果仍然失败，请重新拍摄或上传更清晰的图片。"
+
+
 class BaiduOcrEngine:
     """Baidu handwriting OCR adapter with an in-memory access-token cache."""
 

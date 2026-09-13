@@ -104,12 +104,30 @@ def build_growth_summary(
     roots = {essay.root_essay_id for essay, _ in ordered}
     has_long_term_insights = len(roots) >= 3
 
+    overall_points: list[dict[str, Any]] = []
     dimension_points: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for essay, final in ordered:
         evaluated_at = getattr(final, "created_at", None) or getattr(essay, "created_at", None)
         if not isinstance(evaluated_at, datetime):
             continue
-        for dimension, (score, max_score) in _dimension_values(final).items():
+        dimensions = _dimension_values(final)
+        overall_score = getattr(final, "overall_score", None)
+        configured_full_score = getattr(essay, "full_score", None)
+        fallback_full_score = sum(max_score for _, max_score in dimensions.values())
+        full_score = configured_full_score if isinstance(configured_full_score, (int, float)) else fallback_full_score
+        if isinstance(overall_score, (int, float)) and full_score > 0:
+            overall_points.append(
+                {
+                    "essay_id": essay.id,
+                    "root_essay_id": essay.root_essay_id,
+                    "version_no": essay.version_no,
+                    "title": essay.title,
+                    "evaluated_at": evaluated_at,
+                    "score": float(overall_score),
+                    "max_score": float(full_score),
+                }
+            )
+        for dimension, (score, max_score) in dimensions.items():
             dimension_points[dimension].append(
                 {
                     "essay_id": essay.id,
@@ -121,6 +139,15 @@ def build_growth_summary(
                     "max_score": max_score,
                 }
             )
+
+    overall_points = overall_points[-10:]
+    overall_direction, overall_change, overall_recent_change = _trend_change(overall_points)
+    overall_trend = {
+        "direction": overall_direction if has_long_term_insights else "insufficient",
+        "change": overall_change if has_long_term_insights else None,
+        "recent_change": overall_recent_change,
+        "points": overall_points,
+    }
 
     dimension_trends: list[dict[str, Any]] = []
     for dimension in DIMENSION_ORDER:
@@ -266,6 +293,7 @@ def build_growth_summary(
         "recent_improvement_dimension": recent_improvement_dimension,
         "practice_dimension": practice_dimension,
         "practice_issue": recurring_issues[0] if recurring_issues else None,
+        "overall_trend": overall_trend,
         "dimension_trends": dimension_trends,
         "recurring_issues": recurring_issues,
         "improved_issues": improved_issues,

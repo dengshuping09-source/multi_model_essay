@@ -98,6 +98,13 @@ class GrowthDimensionTrendResponse(BaseModel):
     points: list[GrowthDimensionPointResponse]
 
 
+class GrowthOverallTrendResponse(BaseModel):
+    direction: Literal["improving", "steady", "declining", "insufficient"]
+    change: float | None
+    recent_change: float | None
+    points: list[GrowthDimensionPointResponse]
+
+
 class GrowthIssuePatternResponse(BaseModel):
     category: str
     issue_type: str | None
@@ -146,6 +153,7 @@ class EssayGrowthSummaryResponse(BaseModel):
     recent_improvement_dimension: str | None
     practice_dimension: str | None
     practice_issue: GrowthIssuePatternResponse | None
+    overall_trend: GrowthOverallTrendResponse
     dimension_trends: list[GrowthDimensionTrendResponse]
     recurring_issues: list[GrowthIssuePatternResponse]
     improved_issues: list[GrowthImprovedIssueResponse]

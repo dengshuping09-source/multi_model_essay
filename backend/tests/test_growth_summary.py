@@ -65,6 +65,8 @@ def test_one_work_shows_snapshot_without_long_term_claims() -> None:
     assert result["practice_dimension"] is None
     assert result["recurring_issues"] == []
     assert result["latest"]["dimension_scores"]
+    assert result["overall_trend"]["direction"] == "insufficient"
+    assert result["overall_trend"]["points"][0]["score"] == 78
 
 
 def test_three_works_find_supported_dimension_improvement_and_recurring_theme() -> None:
@@ -90,6 +92,7 @@ def test_three_works_find_supported_dimension_improvement_and_recurring_theme() 
     structure = next(item for item in result["dimension_trends"] if item["dimension"] == "structure_and_coherence")
     assert structure["direction"] == "improving"
     assert structure["recent_change"] == 3
+    assert result["overall_trend"]["direction"] == "improving"
 
 
 def test_three_stable_works_do_not_invent_improvement() -> None:
@@ -173,5 +176,6 @@ def test_many_works_keep_recent_readable_window_and_match_api_schema() -> None:
 
     assert validated.work_count == 10
     assert validated.has_long_term_insights is True
+    assert len(validated.overall_trend.points) == 10
     assert len(content_trend.points) == 8
     assert content_trend.points[0].title == "作文3"

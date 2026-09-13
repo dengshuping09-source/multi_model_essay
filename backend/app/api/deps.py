@@ -13,12 +13,12 @@ async def get_current_user(
     authorization: Annotated[str | None, Header()] = None,
 ) -> User:
     if authorization is None or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication is required")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录后再继续")
     try:
         async with get_session_factory()() as session:
             return await get_user_for_token(session, authorization.removeprefix("Bearer ").strip())
     except AuthenticationError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication is required") from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录状态已失效，请重新登录") from exc
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]

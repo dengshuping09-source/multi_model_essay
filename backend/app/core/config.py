@@ -2,6 +2,8 @@ from functools import lru_cache
 from pathlib import Path
 from datetime import timedelta
 
+from typing import Literal
+
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -30,6 +32,11 @@ class Settings(BaseSettings):
     ocr_worker_poll_seconds: float = 1.0
     ocr_worker_job_timeout_seconds: float = 180.0
     ocr_worker_stale_seconds: float = 300.0
+    ocr_worker_max_jobs_per_process: int = 20
+    # Baidu handwriting OCR is deliberately the default in production.  Paddle
+    # remains available only when explicitly selected through configuration or
+    # an internal request; importing this setting never loads a Paddle model.
+    ocr_default_engine: Literal["baidu", "paddle"] = "baidu"
     deepseek_api_key: SecretStr | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_api_url: str | None = None
@@ -59,6 +66,7 @@ class Settings(BaseSettings):
     model_review_max_retries: int = 1
     model_calibration_min_samples: int = 8
     session_ttl_hours: int = 168
+    baidu_ocr_app_id: str | None = None
     baidu_ocr_api_key: SecretStr | None = None
     baidu_ocr_secret_key: SecretStr | None = None
     baidu_ocr_token_url: str = "https://aip.baidubce.com/oauth/2.0/token"
@@ -85,6 +93,7 @@ class Settings(BaseSettings):
             "QWEN_API_KEY=",
             "DOUBAO_API_KEY=",
             "ARK_API_KEY=",
+            "BAIDU_OCR_APP_ID=",
             "BAIDU_OCR_API_KEY=",
             "BAIDU_OCR_SECRET_KEY=",
         )

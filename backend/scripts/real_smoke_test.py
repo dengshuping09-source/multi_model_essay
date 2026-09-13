@@ -39,6 +39,7 @@ from app.db.session import check_database_connection, get_session_factory  # noq
 from app.modules.auth.service import register_user  # noqa: E402
 from app.modules.essays.service import submit_essay  # noqa: E402
 from app.modules.essays.storage import remove_artifact_paths  # noqa: E402
+from app.modules.ocr.engine import get_default_ocr_engine_key  # noqa: E402
 from app.modules.ocr.service import run_essay_ocr  # noqa: E402
 from app.modules.reviews.providers import get_review_provider_registry  # noqa: E402
 from app.modules.reviews.service import (  # noqa: E402
@@ -218,9 +219,12 @@ async def run_live_smoke(image_path: Path | None) -> list[SmokeResult]:
             else:
                 results.append(SmokeResult("电子作文评测", SmokeStatus.FAIL, "未生成有效综合报告"))
 
+            default_ocr_engine = get_default_ocr_engine_key()
+            default_ocr_label = "百度 OCR" if default_ocr_engine == "baidu" else "PaddleOCR"
             if image_path is None:
-                results.append(SmokeResult("PaddleOCR", SmokeStatus.NOT_VERIFIED, "需要提供 --image 真实作文图片"))
-                results.append(SmokeResult("百度 OCR", SmokeStatus.NOT_VERIFIED, "需要提供 --image 真实作文图片"))
+                results.append(SmokeResult(default_ocr_label, SmokeStatus.NOT_VERIFIED, "需要提供 --image 真实作文图片"))
+                if default_ocr_engine == "baidu":
+                    results.append(SmokeResult("PaddleOCR", SmokeStatus.NOT_VERIFIED, "当前默认模式不启动 PaddleOCR"))
                 results.append(SmokeResult("图片 OCR", SmokeStatus.NOT_VERIFIED, "需要提供 --image 真实作文图片"))
             else:
                 image_essay = await submit_essay(
@@ -240,34 +244,26 @@ async def run_live_smoke(image_path: Path | None) -> list[SmokeResult]:
                     if source.quality_analysis and source.quality_analysis.processed_storage_key:
                         artifact_paths.append(settings.upload_dir / source.quality_analysis.processed_storage_key)
 
-                paddle_run = await run_essay_ocr(session, image_essay.id, engine_key="paddle")
+                default_run = await run_essay_ocr(session, image_essay.id, engine_key=default_ocr_engine)
                 # A low-confidence page is still a usable OCR result that the
                 # correction screen can present. A failed/empty run is not.
-                paddle_ok = (
-                    paddle_run.status in {OcrRunStatus.COMPLETED, OcrRunStatus.PARTIAL}
-                    and paddle_run.total_blocks > 0
+                default_ok = (
+                    default_run.status in {OcrRunStatus.COMPLETED, OcrRunStatus.PARTIAL}
+                    and default_run.total_blocks > 0
                 )
                 results.append(
-                    SmokeResult("PaddleOCR", SmokeStatus.PASS if paddle_ok else SmokeStatus.FAIL,
-                                None if paddle_ok else "未保存可用 OCR 结果")
+                    SmokeResult(default_ocr_label, SmokeStatus.PASS if default_ok else SmokeStatus.FAIL,
+                                None if default_ok else "未保存可用 OCR 结果")
                 )
 
-                if _configured_baidu():
-                    baidu_run = await run_essay_ocr(session, image_essay.id, engine_key="baidu")
-                    baidu_ok = (
-                        baidu_run.status in {OcrRunStatus.COMPLETED, OcrRunStatus.PARTIAL}
-                        and baidu_run.total_blocks > 0
-                    )
-                    results.append(
-                        SmokeResult("百度 OCR", SmokeStatus.PASS if baidu_ok else SmokeStatus.FAIL,
-                                    None if baidu_ok else "未保存可用 OCR 结果")
-                    )
-                else:
+                if default_ocr_engine == "baidu":
+                    results.append(SmokeResult("PaddleOCR", SmokeStatus.NOT_VERIFIED, "当前默认模式不启动 PaddleOCR"))
+                elif not _configured_baidu():
                     results.append(SmokeResult("百度 OCR", SmokeStatus.NOT_CONFIGURED))
 
                 results.append(
-                    SmokeResult("图片 OCR", SmokeStatus.PASS if paddle_ok else SmokeStatus.FAIL,
-                                None if paddle_ok else "PaddleOCR 未生成可用结果")
+                    SmokeResult("图片 OCR", SmokeStatus.PASS if default_ok else SmokeStatus.FAIL,
+                                None if default_ok else f"{default_ocr_label} 未生成可用结果")
                 )
     except Exception as exc:
         # A failure while creating or saving the smoke artefacts is distinct from
@@ -298,7 +294,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image",
         type=Path,
-        help="一张真实作文图片。提供后会运行真实 PaddleOCR，且在配置时运行百度 OCR。",
+        help="一张真实作文图片。提供后会运行当前默认 OCR 提供方的真实识别。",
     )
     return parser.parse_args()
 

@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 import logging
 import multiprocessing
 from pathlib import Path
+from queue import Empty
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import select
@@ -15,7 +17,6 @@ from app.core.config import settings
 from app.db.models import Essay, OcrRun, OcrRunStatus
 from app.db.session import get_session_factory
 from app.modules.ocr.engine import OcrEngineKey
-from app.modules.ocr.service import mark_ocr_run_failed, run_essay_ocr
 
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,13 @@ def _age_seconds(started_at: datetime) -> float:
 
 async def _fail_run(run_id: UUID) -> None:
     async with get_session_factory()() as session:
-        await mark_ocr_run_failed(session, run_id)
+        run = await session.scalar(select(OcrRun).where(OcrRun.id == run_id))
+        if run is None or run.status is not OcrRunStatus.RUNNING:
+            return
+        run.status = OcrRunStatus.FAILED
+        run.error_message = "识别任务暂时中断，请重新识别；已上传的图片仍然保留。"
+        run.completed_at = datetime.now(timezone.utc)
+        await session.commit()
 
 
 async def _recover_interrupted_run() -> None:
@@ -70,7 +77,10 @@ async def _next_job() -> OcrJob | None:
             return None
         if _age_seconds(run.started_at) > settings.ocr_worker_stale_seconds:
             logger.warning("expiring stale OCR run run_id=%s", run.id)
-            await mark_ocr_run_failed(session, run.id)
+            run.status = OcrRunStatus.FAILED
+            run.error_message = "识别任务等待时间过长，请重新识别；已上传的图片仍然保留。"
+            run.completed_at = datetime.now(timezone.utc)
+            await session.commit()
             return None
 
         completed_source_ids = {page.source_id for page in run.pages}
@@ -83,7 +93,10 @@ async def _next_job() -> OcrJob | None:
             }
             if not source_ids:
                 logger.warning("OCR run has no remaining pages run_id=%s", run.id)
-                await mark_ocr_run_failed(session, run.id)
+                run.status = OcrRunStatus.FAILED
+                run.error_message = "没有需要继续识别的图片，请重新提交识别。"
+                run.completed_at = datetime.now(timezone.utc)
+                await session.commit()
                 return None
 
         engine_key: OcrEngineKey = "baidu" if run.engine_key == "baidu" else "paddle"
@@ -95,41 +108,147 @@ async def _next_job() -> OcrJob | None:
         )
 
 
-def _execute_job(job: OcrJob) -> None:
-    async def execute() -> None:
-        async with get_session_factory()() as session:
-            await run_essay_ocr(
-                session,
-                job.essay_id,
-                engine_key=job.engine_key,
-                run_id=job.run_id,
-                source_ids=job.source_ids,
-            )
+async def _execute_job(job: OcrJob) -> None:
+    # Keep numpy/OpenCV/Paddle imports out of the lightweight supervisor. They
+    # belong in the isolated child, which leaves considerably more of the
+    # container memory limit available for the OCR model itself.
+    from app.modules.ocr.service import run_essay_ocr
 
-    asyncio.run(execute())
+    async with get_session_factory()() as session:
+        await run_essay_ocr(
+            session,
+            job.essay_id,
+            engine_key=job.engine_key,
+            run_id=job.run_id,
+            source_ids=job.source_ids,
+        )
 
 
-def _run_job_process(job: OcrJob) -> int:
-    ACTIVE_RUN_MARKER.parent.mkdir(parents=True, exist_ok=True)
-    ACTIVE_RUN_MARKER.write_text(str(job.run_id), encoding="utf-8")
-    process = multiprocessing.get_context("spawn").Process(
-        target=_execute_job,
-        args=(job,),
-        name=f"ocr-{job.run_id}",
+def _consume_jobs(job_queue, result_queue) -> None:
+    """Run OCR jobs in one isolated process so the loaded model can be reused.
+
+    The parent process still owns timeout and crash recovery.  If Paddle hangs or
+    exceeds the worker container's memory limit, only this child is replaced and
+    the web API remains available.
+    """
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    process.start()
-    process.join(timeout=settings.ocr_worker_job_timeout_seconds)
-    if process.is_alive():
+
+    async def consume() -> None:
+        while True:
+            job = await asyncio.to_thread(job_queue.get)
+            if job is None:
+                return
+            try:
+                await _execute_job(job)
+            except Exception:
+                logger.exception("OCR worker child job failed run_id=%s", job.run_id)
+                result_queue.put((str(job.run_id), 1, "job_error"))
+            else:
+                result_queue.put((str(job.run_id), 0, "completed"))
+
+    asyncio.run(consume())
+
+
+class OcrProcessRunner:
+    """Supervise a reusable OCR child while retaining a hard per-job timeout."""
+
+    def __init__(self) -> None:
+        self._context = multiprocessing.get_context("spawn")
+        self._process = None
+        self._job_queue = None
+        self._result_queue = None
+        self._completed_jobs = 0
+
+    def _start(self) -> None:
+        self._job_queue = self._context.Queue(maxsize=1)
+        self._result_queue = self._context.Queue(maxsize=1)
+        self._process = self._context.Process(
+            target=_consume_jobs,
+            args=(self._job_queue, self._result_queue),
+            name="ocr-engine",
+        )
+        self._process.start()
+        self._completed_jobs = 0
+        logger.info("OCR engine process started pid=%s", self._process.pid)
+
+    def _stop(self, *, force: bool) -> None:
+        process = self._process
+        if process is None:
+            return
+        if process.is_alive() and not force and self._job_queue is not None:
+            try:
+                self._job_queue.put(None, timeout=1)
+            except Exception:
+                force = True
+            else:
+                process.join(timeout=8)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+        for queue in (self._job_queue, self._result_queue):
+            if queue is not None:
+                if force:
+                    queue.cancel_join_thread()
+                queue.close()
+                if not force:
+                    queue.join_thread()
+        self._process = None
+        self._job_queue = None
+        self._result_queue = None
+
+    def execute(self, job: OcrJob) -> tuple[int, str]:
+        if self._process is None or not self._process.is_alive():
+            self._stop(force=True)
+            self._start()
+        assert self._process is not None
+        assert self._job_queue is not None
+        assert self._result_queue is not None
+
+        ACTIVE_RUN_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        ACTIVE_RUN_MARKER.write_text(str(job.run_id), encoding="utf-8")
+        self._job_queue.put(job)
+        deadline = monotonic() + settings.ocr_worker_job_timeout_seconds
+        while monotonic() < deadline:
+            remaining = max(0.01, min(0.5, deadline - monotonic()))
+            try:
+                run_id, exit_code, reason = self._result_queue.get(timeout=remaining)
+            except Empty:
+                if not self._process.is_alive():
+                    exit_code = self._process.exitcode or 1
+                    self._stop(force=True)
+                    return exit_code, "process_exited"
+                continue
+            if run_id != str(job.run_id):
+                logger.warning(
+                    "discarding unexpected OCR worker result expected=%s actual=%s",
+                    job.run_id,
+                    run_id,
+                )
+                continue
+            if exit_code == 0:
+                ACTIVE_RUN_MARKER.unlink(missing_ok=True)
+                self._completed_jobs += 1
+                if self._completed_jobs >= max(1, settings.ocr_worker_max_jobs_per_process):
+                    logger.info(
+                        "recycling OCR engine process after %d jobs",
+                        self._completed_jobs,
+                    )
+                    self._stop(force=False)
+            return int(exit_code), str(reason)
+
         logger.error("OCR worker timeout run_id=%s", job.run_id)
-        process.terminate()
-        process.join(timeout=5)
-    if process.is_alive():
-        process.kill()
-        process.join(timeout=5)
-    exit_code = process.exitcode if process.exitcode is not None else 1
-    if exit_code == 0:
-        ACTIVE_RUN_MARKER.unlink(missing_ok=True)
-    return exit_code
+        self._stop(force=True)
+        return 1, "timeout"
+
+    def close(self) -> None:
+        self._stop(force=False)
 
 
 async def run_worker() -> None:
@@ -139,19 +258,28 @@ async def run_worker() -> None:
     )
     await _recover_interrupted_run()
     logger.info("OCR worker started")
-    while True:
-        job = await _next_job()
-        if job is None:
-            await asyncio.sleep(settings.ocr_worker_poll_seconds)
-            continue
-        logger.info("OCR worker accepted run_id=%s engine=%s", job.run_id, job.engine_key)
-        exit_code = await asyncio.to_thread(_run_job_process, job)
-        if exit_code != 0:
-            logger.error("OCR worker process failed run_id=%s exit_code=%s", job.run_id, exit_code)
-            await _fail_run(job.run_id)
-            ACTIVE_RUN_MARKER.unlink(missing_ok=True)
-        else:
-            logger.info("OCR worker completed run_id=%s", job.run_id)
+    runner = OcrProcessRunner()
+    try:
+        while True:
+            job = await _next_job()
+            if job is None:
+                await asyncio.sleep(settings.ocr_worker_poll_seconds)
+                continue
+            logger.info("OCR worker accepted run_id=%s engine=%s", job.run_id, job.engine_key)
+            exit_code, reason = await asyncio.to_thread(runner.execute, job)
+            if exit_code != 0:
+                logger.error(
+                    "OCR worker process failed run_id=%s exit_code=%s reason=%s",
+                    job.run_id,
+                    exit_code,
+                    reason,
+                )
+                await _fail_run(job.run_id)
+                ACTIVE_RUN_MARKER.unlink(missing_ok=True)
+            else:
+                logger.info("OCR worker completed run_id=%s", job.run_id)
+    finally:
+        runner.close()
 
 
 if __name__ == "__main__":

@@ -11,20 +11,20 @@ services:
       - ${WENHENG_ENV_FILE:-./deploy/production.env}
     environment:
       APP_ENV: production
-      OCR_WORKER_ENABLED: "true"
+      OCR_WORKER_ENABLED: "${OCR_WORKER_ENABLED:-false}"
       UPLOAD_DIR: /app/storage/uploads
-      PADDLE_PDX_CACHE_HOME: /app/.cache/paddlex
     expose:
       - "8000"
     volumes:
       - wenheng_storage:/app/storage
-      - wenheng_paddlex_cache:/app/.cache/paddlex
     networks:
       - wenheng_internal
 
   ocr-worker:
     image: wenheng-backend:local
     restart: unless-stopped
+    profiles:
+      - paddle-worker
     command:
       - python
       - -m

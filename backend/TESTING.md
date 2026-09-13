@@ -46,8 +46,8 @@ of `PASS`, `FAIL`, `NOT CONFIGURED`, or `NOT VERIFIED`:
 DeepSeek            PASS
 Qwen                PASS
 豆包                FAIL - 账号当前未开通该模型
-PaddleOCR           PASS
-百度 OCR            NOT CONFIGURED
+百度 OCR            PASS
+PaddleOCR           NOT VERIFIED - 当前默认模式不启动 PaddleOCR
 电子作文评测         PASS
 图片 OCR            PASS
 ```

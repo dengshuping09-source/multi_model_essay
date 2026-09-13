@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import logging
 from pathlib import Path
 from threading import Lock
+from time import perf_counter
 from typing import Any, Literal, Protocol
 
 from app.core.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -37,6 +42,7 @@ class PaddleOcrEngine:
         if self._pipeline is None:
             from paddleocr import PaddleOCR
 
+            started_at = perf_counter()
             self._pipeline = PaddleOCR(
                 text_detection_model_name=self.detection_model,
                 text_recognition_model_name=self.recognition_model,
@@ -46,6 +52,12 @@ class PaddleOcrEngine:
                 device=settings.ocr_device,
                 enable_mkldnn=settings.ocr_enable_mkldnn,
                 cpu_threads=settings.ocr_cpu_threads,
+            )
+            logger.info(
+                "ocr_engine_initialized engine=paddle detection_model=%s recognition_model=%s elapsed_ms=%d",
+                self.detection_model,
+                self.recognition_model,
+                round((perf_counter() - started_at) * 1000),
             )
         return self._pipeline
 
@@ -94,7 +106,13 @@ def get_baidu_ocr_engine() -> OcrEngine:
     return BaiduOcrEngine()
 
 
-def get_ocr_engine(engine_key: OcrEngineKey = "paddle") -> OcrEngine:
+def get_default_ocr_engine_key() -> OcrEngineKey:
+    """Return the configured provider without importing either OCR runtime."""
+    return settings.ocr_default_engine
+
+
+def get_ocr_engine(engine_key: OcrEngineKey | None = None) -> OcrEngine:
+    engine_key = engine_key or get_default_ocr_engine_key()
     if engine_key == "paddle":
         return get_paddle_ocr_engine()
     return get_baidu_ocr_engine()

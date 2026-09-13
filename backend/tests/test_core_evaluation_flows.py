@@ -269,6 +269,12 @@ def test_supported_image_formats_complete_ocr_correction_review_and_report(
                 report = await client.get(f"/api/essays/{essay_id}/reports/latest")
                 assert report.status_code == 200
                 assert report.json()["overall_score"] == 86
+
+                exported = await client.get(f"/api/essays/{essay_id}/reports/latest.pdf")
+                assert exported.status_code == 200, exported.text
+                assert exported.headers["content-type"].startswith("application/pdf")
+                assert "filename*=UTF-8''" in exported.headers["content-disposition"]
+                assert exported.content.startswith(b"%PDF")
         finally:
             await cleanup_records(essay_ids, user_id)
             await close_test_database()

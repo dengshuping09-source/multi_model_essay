@@ -119,6 +119,17 @@ if [[ -n "${OVERRIDE_FILE}" ]]; then
     compose+=( -f "${OVERRIDE_FILE}" )
 fi
 
+# Baidu is the normal production OCR path and does not need a separate model
+# worker. Paddle remains an explicit fallback: enable both settings before a
+# deployment when that worker is intentionally required.
+ocr_default_engine="$(env_value OCR_DEFAULT_ENGINE)"
+ocr_worker_enabled="$(env_value OCR_WORKER_ENABLED)"
+paddle_worker_enabled=0
+if [[ "${ocr_default_engine}" == "paddle" && "${ocr_worker_enabled}" == "true" ]]; then
+    compose+=( --profile paddle-worker )
+    paddle_worker_enabled=1
+fi
+
 "${compose[@]}" config --quiet
 "${system_sudo[@]}" nginx -t
 
@@ -145,7 +156,11 @@ if [[ "${WENHENG_FORCE_FRONTEND:-0}" == "1" ]]; then
 fi
 
 previous_backend_image="$("${docker_cli[@]}" inspect -f '{{.Image}}' wenheng-backend-1 2>/dev/null || true)"
-previous_ocr_worker_image="$("${docker_cli[@]}" inspect -f '{{.Image}}' wenheng-ocr-worker-1 2>/dev/null || true)"
+previous_ocr_worker_image=""
+if [[ "${paddle_worker_enabled}" == "1" ]]; then
+    previous_ocr_worker_image="$("${docker_cli[@]}" inspect -f '{{.Image}}' wenheng-ocr-worker-1 2>/dev/null || true)"
+fi
+legacy_ocr_worker_was_running="$("${docker_cli[@]}" inspect -f '{{.State.Running}}' wenheng-ocr-worker-1 2>/dev/null || true)"
 previous_frontend_image="$("${docker_cli[@]}" inspect -f '{{.Image}}' wenheng-frontend-1 2>/dev/null || true)"
 deployment_swapped=0
 
@@ -159,9 +174,9 @@ rollback_containers() {
         if [[ "${backend_changed}" == "1" && -n "${previous_backend_image}" ]]; then
             "${docker_cli[@]}" image tag "${previous_backend_image}" wenheng-backend:local
             rollback_services+=(backend)
-            if [[ -n "${previous_ocr_worker_image}" ]]; then
+            if [[ "${paddle_worker_enabled}" == "1" && -n "${previous_ocr_worker_image}" ]]; then
                 rollback_services+=(ocr-worker)
-            else
+            elif [[ "${paddle_worker_enabled}" == "1" ]]; then
                 "${compose[@]}" stop ocr-worker >/dev/null 2>&1 || true
             fi
         fi
@@ -171,6 +186,9 @@ rollback_containers() {
         fi
         if (( ${#rollback_services[@]} > 0 )); then
             "${compose[@]}" up -d --force-recreate --no-deps "${rollback_services[@]}"
+        fi
+        if [[ "${paddle_worker_enabled}" != "1" && "${legacy_ocr_worker_was_running}" == "true" ]]; then
+            "${docker_cli[@]}" start wenheng-ocr-worker-1 >/dev/null 2>&1 || true
         fi
     fi
     echo "DEPLOYMENT_FAILED commit=${target_commit}" >&2
@@ -182,7 +200,10 @@ services_to_update=()
 if [[ "${backend_changed}" == "1" ]]; then
     echo "Building backend image; unchanged requirements reuse the Docker dependency layer."
     "${compose[@]}" build backend
-    services_to_update+=(backend ocr-worker)
+    services_to_update+=(backend)
+    if [[ "${paddle_worker_enabled}" == "1" ]]; then
+        services_to_update+=(ocr-worker)
+    fi
 fi
 if [[ "${frontend_changed}" == "1" ]]; then
     echo "Building frontend image; unchanged package lock files reuse the npm dependency layer."
@@ -190,7 +211,7 @@ if [[ "${frontend_changed}" == "1" ]]; then
     services_to_update+=(frontend)
 fi
 
-if [[ "${backend_changed}" == "1" ]]; then
+if [[ "${backend_changed}" == "1" && "${paddle_worker_enabled}" == "1" ]]; then
     "${compose[@]}" run --rm --no-deps -T backend python -c \
         'import asyncio; from app.db.session import check_database_connection; asyncio.run(check_database_connection())'
 
@@ -236,6 +257,11 @@ for attempt in $(seq 1 45); do
     fi
     sleep 2
 done
+
+if [[ "${paddle_worker_enabled}" != "1" && "${legacy_ocr_worker_was_running}" == "true" ]]; then
+    echo "Stopping legacy Paddle OCR worker; Baidu OCR is the configured production provider."
+    "${docker_cli[@]}" stop wenheng-ocr-worker-1 >/dev/null
+fi
 
 "${system_sudo[@]}" systemctl reload nginx
 "${compose[@]}" ps

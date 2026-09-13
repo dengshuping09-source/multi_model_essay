@@ -10,13 +10,26 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from xml.sax.saxutils import escape
 
 from app.db.models import Essay, FinalEvaluation, ModelReview, ReviewRecheck, ReviewStatus
 
 
 PROVIDER_LABELS = {"deepseek": "DeepSeek", "qwen": "Qwen", "doubao": "豆包"}
+REVIEW_STATUS_LABELS = {
+    "pending": "等待中",
+    "running": "进行中",
+    "completed": "已完成",
+    "failed": "未完成",
+}
+RECHECK_STATUS_LABELS = {
+    "pending": "等待复核",
+    "running": "复核中",
+    "completed": "已完成",
+    "skipped": "无需复核",
+    "failed": "未完成",
+}
 DIMENSION_LABELS = {
     "content_and_ideas": "内容与立意",
     "structure_and_coherence": "结构与连贯",
@@ -44,6 +57,16 @@ def _dimensions(final: FinalEvaluation) -> list[dict[str, Any]]:
     return [item for item in (final.dimension_scores or []) if isinstance(item, dict)]
 
 
+def _report_payload(final: FinalEvaluation, key: str) -> dict[str, Any]:
+    config = final.aggregation_config if isinstance(final.aggregation_config, dict) else {}
+    value = config.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _dict_items(value: object) -> list[dict[str, Any]]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
 def _average_spread(final: FinalEvaluation | None) -> float | None:
     if final is None:
         return None
@@ -64,7 +87,7 @@ def _dispute_text(dispute: object) -> str:
     if dispute.get("type") == "outlier_score":
         providers = "、".join(str(item) for item in dispute.get("providers", []))
         return f"异常总分：{providers or '某模型'} 与中位数偏离较大"
-    return "; ".join(f"{key}: {value}" for key, value in dispute.items())
+    return "检测到需要进一步确认的评分差异"
 
 
 def build_report_pdf(
@@ -83,18 +106,18 @@ def build_report_pdf(
         leftMargin=16 * mm,
         topMargin=15 * mm,
         bottomMargin=15 * mm,
-        title=f"作文智能评测报告 - {essay.title or '未命名作文'}",
+        title=f"文衡作文评测报告 - {essay.title or '未命名作文'}",
     )
     styles = getSampleStyleSheet()
-    title = ParagraphStyle("ReportTitle", parent=styles["Title"], fontName="STSong-Light", fontSize=21, leading=28, textColor=colors.HexColor("#1f4e58"))
-    heading = ParagraphStyle("ReportHeading", parent=styles["Heading2"], fontName="STSong-Light", fontSize=14, leading=20, textColor=colors.HexColor("#1f4e58"), spaceBefore=12, spaceAfter=7)
-    body = ParagraphStyle("ReportBody", parent=styles["BodyText"], fontName="STSong-Light", fontSize=9.4, leading=15, textColor=colors.HexColor("#263c43"))
+    title = ParagraphStyle("ReportTitle", parent=styles["Title"], fontName="STSong-Light", fontSize=21, leading=28, textColor=colors.HexColor("#1f4e58"), wordWrap="CJK")
+    heading = ParagraphStyle("ReportHeading", parent=styles["Heading2"], fontName="STSong-Light", fontSize=14, leading=20, textColor=colors.HexColor("#1f4e58"), spaceBefore=12, spaceAfter=7, wordWrap="CJK")
+    body = ParagraphStyle("ReportBody", parent=styles["BodyText"], fontName="STSong-Light", fontSize=9.4, leading=15, textColor=colors.HexColor("#263c43"), wordWrap="CJK")
     muted = ParagraphStyle("ReportMuted", parent=body, fontSize=8.4, leading=13, textColor=colors.HexColor("#60737a"))
     score_style = ParagraphStyle("ReportScore", parent=styles["Title"], fontName="STSong-Light", fontSize=28, leading=34, alignment=TA_CENTER, textColor=colors.HexColor("#176f67"))
     story: list[object] = []
 
     story.extend([
-        _paragraph("多模型协同作文智能评测报告", title),
+        _paragraph("文衡作文评测报告", title),
         _paragraph(essay.title or "未命名作文", heading),
         _paragraph(
             f"年级：{essay.grade_level or '未填写'}　文体：{essay.genre or '未填写'}　满分：{essay.full_score}",
@@ -125,6 +148,22 @@ def build_report_pdf(
         ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
     ]))
     story.extend([overview, Spacer(1, 4 * mm), _paragraph("评分维度与模型差异", heading)])
+
+    feedback = _report_payload(final, "learning_feedback")
+    priority_issues = _dict_items(feedback.get("priority_issues"))
+    strengths = _dict_items(feedback.get("strengths"))
+    if priority_issues:
+        story.append(_paragraph("本次最值得先改", heading))
+        for item in priority_issues[:3]:
+            suggestion = item.get("suggestion")
+            if suggestion:
+                story.append(_paragraph(f"- {suggestion}", body))
+    if strengths:
+        story.append(_paragraph("做得好的地方", heading))
+        for item in strengths[:3]:
+            comment = item.get("comment")
+            if comment:
+                story.append(_paragraph(f"- {comment}", body))
 
     dimension_rows: list[list[Paragraph]] = [[
         _paragraph("维度", body), _paragraph("综合", body), _paragraph("分歧", body), _paragraph("模型评分", body),
@@ -167,21 +206,20 @@ def build_report_pdf(
     for review in reviews:
         output = review.raw_response.get("output") if isinstance(review.raw_response, dict) else None
         summary = review.summary or review.error_message or "未返回可展示的评审结果"
-        card = [
-            _paragraph(
-                f"<b>{PROVIDER_LABELS.get(review.model_provider, review.model_provider)}</b>　"
-                f"状态：{review.status.value}　总分：{float(review.overall_score) if review.overall_score is not None else '--'}",
-                body,
-            ),
-            _paragraph(summary, body),
-        ]
+        story.append(_paragraph(
+            f"<b>{PROVIDER_LABELS.get(review.model_provider, review.model_provider)}</b>　"
+            f"状态：{REVIEW_STATUS_LABELS.get(review.status.value, '状态未知')}　"
+            f"总分：{float(review.overall_score) if review.overall_score is not None else '--'}",
+            body,
+        ))
+        story.append(_paragraph(summary, body))
         if isinstance(output, dict):
             suggestions = output.get("improvement_suggestions")
             if isinstance(suggestions, list) and suggestions:
                 first = suggestions[0]
                 if isinstance(first, dict):
-                    card.append(_paragraph(f"建议：{first.get('suggestion', '--')}", muted))
-        story.append(KeepTogether(card + [Spacer(1, 3 * mm)]))
+                    story.append(_paragraph(f"建议：{first.get('suggestion', '--')}", muted))
+        story.append(Spacer(1, 3 * mm))
 
     if rechecks:
         story.append(_paragraph("交叉复核记录", heading))
@@ -191,7 +229,7 @@ def build_report_pdf(
             baseline_spread = _average_spread(baseline)
             resolved_spread = _average_spread(resolved)
             story.append(_paragraph(
-                f"<b>{recheck.status.value}</b>：{recheck.trigger_reason}<br/>"
+                f"<b>{RECHECK_STATUS_LABELS.get(recheck.status.value, '状态未知')}</b>：{recheck.trigger_reason}<br/>"
                 f"复核前总分 {baseline_score}，平均分歧 {baseline_spread if baseline_spread is not None else '--'}；"
                 f"复核后总分 {resolved_score}，平均分歧 {resolved_spread if resolved_spread is not None else '--'}。<br/>"
                 f"{recheck.result_summary or '暂无复核说明'}",
@@ -208,9 +246,26 @@ def build_report_pdf(
                 body,
             ))
 
+    deep_analysis = _report_payload(final, "deep_analysis")
+    deep_annotations = _dict_items(deep_analysis.get("annotations"))
+    if deep_analysis.get("status") == "completed" and deep_annotations:
+        story.append(_paragraph("深入反馈", heading))
+        for annotation in deep_annotations[:16]:
+            quote = annotation.get("evidence_text") or annotation.get("quote") or "原文片段"
+            comment = annotation.get("comment") or ""
+            suggestion = annotation.get("suggestion") or ""
+            story.append(_paragraph(
+                f"<b>“{quote}”</b>：{comment}{' 建议：' + str(suggestion) if suggestion else ''}",
+                body,
+            ))
+
+    if essay.original_text:
+        story.append(_paragraph("本次评测原文", heading))
+        story.append(_paragraph(essay.original_text, body))
+
     story.append(Spacer(1, 7 * mm))
     story.append(_paragraph(
-        "本报告由已保存的 OCR 校对文本、模型独立评审与综合规则生成。PDF 导出不会再次调用 OCR 或大模型。",
+        "本报告根据已确认的作文文字和评测结果生成。导出不会重新识别图片或重新评测。",
         muted,
     ))
     document.build(story)

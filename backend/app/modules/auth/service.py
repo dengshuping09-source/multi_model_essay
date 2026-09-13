@@ -31,14 +31,14 @@ async def register_user(session: AsyncSession, email: str, display_name: str, pa
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        raise RegistrationError("This email address is already registered") from exc
+        raise RegistrationError("这个邮箱已经注册，请直接登录") from exc
     return user
 
 
 async def create_session(session: AsyncSession, email: str, password: str) -> tuple[User, str, datetime]:
     user = await session.scalar(select(User).where(User.email == email.strip().lower()))
     if user is None or not user.is_active or not verify_password(password, user.password_hash):
-        raise AuthenticationError("Invalid email or password")
+        raise AuthenticationError("邮箱或密码不正确")
     token = new_session_token()
     expires_at = datetime.now(timezone.utc) + settings.session_ttl
     session.add(UserSession(user_id=user.id, token_hash=token_digest(token), expires_at=expires_at))
@@ -58,7 +58,7 @@ async def get_user_for_token(session: AsyncSession, token: str) -> User:
         .options(selectinload(UserSession.user))
     )
     if user_session is None or not user_session.user.is_active:
-        raise AuthenticationError("Authentication is required")
+        raise AuthenticationError("请先登录后再继续")
     return user_session.user
 
 
