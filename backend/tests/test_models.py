@@ -19,6 +19,7 @@ def test_core_database_tables_are_registered() -> None:
         "final_evaluations",
         "image_quality_analyses",
         "model_reviews",
+        "material_favorites",
         "ocr_block_corrections",
         "ocr_blocks",
         "ocr_corrections",
@@ -31,6 +32,7 @@ def test_core_database_tables_are_registered() -> None:
         "review_rechecks",
         "user_sessions",
         "users",
+        "writing_training_sessions",
     }
 
 

@@ -23,6 +23,12 @@ class User(UuidPrimaryKeyMixin, TimestampMixin, Base):
         back_populates="user", cascade="all, delete-orphan"
     )
     essays: Mapped[list[object]] = relationship("Essay", back_populates="author")
+    training_sessions: Mapped[list[object]] = relationship(
+        "WritingTrainingSession", back_populates="author", cascade="all, delete-orphan"
+    )
+    material_favorites: Mapped[list[object]] = relationship(
+        "MaterialFavorite", back_populates="author", cascade="all, delete-orphan"
+    )
 
 
 class UserSession(UuidPrimaryKeyMixin, Base):

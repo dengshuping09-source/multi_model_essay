@@ -308,7 +308,7 @@ def test_failed_image_recognition_can_retry_without_reuploading(
                 failed_payload = failed.json()
                 assert failed_payload["status"] == "failed"
                 assert "internal OCR adapter secret" not in (failed_payload["error_message"] or "")
-                assert "重试" in failed_payload["pages"][0]["error_message"]
+                assert "重新识别" in failed_payload["pages"][0]["error_message"]
 
                 retried = await client.post(f"/api/essays/{essay_id}/ocr")
                 assert retried.status_code == 201, retried.text
@@ -357,7 +357,8 @@ def test_direct_text_gets_report_and_empty_model_results_do_not_create_one(
                 assert successful_payload["text_source"] == "direct_input"
                 assert successful_payload["final_evaluation"]["overall_score"] == 86
                 assert successful_payload["final_evaluation"]["summary"]
-                assert successful_payload["reviews"][0]["annotations"] == []
+                assert successful_payload["reviews"][0]["annotations"]
+                assert len(successful_payload["reviews"][0]["annotations"]) <= 5
                 assert successful_payload["reviews"][0]["result"]["improvement_suggestions"]
                 assert successful_payload["final_evaluation"]["deep_analysis"]["status"] == "not_started"
                 history_after_review = await client.get("/api/essays")
@@ -492,7 +493,7 @@ def test_quick_and_deep_review_share_one_report_and_deep_requests_are_idempotent
                 assert quick_report["overall_score"] == 86
                 batches = (await client.get(f"/api/essays/{essay_id}/reviews/batches")).json()
                 assert batches[0]["review_mode"] == "quick"
-                assert all(not review["annotations"] for review in batches[0]["reviews"])
+                assert all(0 < len(review["annotations"]) <= 5 for review in batches[0]["reviews"])
 
                 async with get_session_factory()() as session:
                     pending_final, should_start = await request_deep_analysis(session, essay_id)

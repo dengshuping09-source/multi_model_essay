@@ -231,6 +231,7 @@ async def submit_essay(
     grade_level: str | None = None,
     genre: str | None = None,
     writing_prompt: str | None = None,
+    origin_type: str = "standard",
     full_score: int = 100,
     parent_essay_id: UUID | None = None,
 ) -> Essay:
@@ -240,6 +241,7 @@ async def submit_essay(
     normalized_grade = (grade_level or "").strip() or None
     normalized_genre = (genre or "").strip() or None
     normalized_prompt = (writing_prompt or "").strip() or None
+    normalized_origin_type = origin_type if origin_type in {"standard", "mock_exam"} else "standard"
 
     if not normalized_text and not images:
         raise UploadValidationError("请输入作文内容或至少上传一张作文图片")
@@ -266,6 +268,7 @@ async def submit_essay(
         )
         if parent is None:
             raise UploadValidationError("无法基于这篇作文创建修改稿")
+        normalized_origin_type = parent.origin_type
         root_essay_id = parent.root_essay_id or parent.id
         await session.scalar(select(Essay.id).where(Essay.id == root_essay_id).with_for_update())
         latest_version = await session.scalar(
@@ -417,6 +420,7 @@ async def submit_essay(
             grade_level=normalized_grade,
             genre=normalized_genre,
             writing_prompt=normalized_prompt,
+            origin_type=normalized_origin_type,
             full_score=full_score,
             original_text=normalized_text,
             status=EssayStatus.READY if normalized_text else EssayStatus.DRAFT,

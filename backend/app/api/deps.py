@@ -22,3 +22,20 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def get_optional_current_user(
+    authorization: Annotated[str | None, Header()] = None,
+) -> User | None:
+    """Allow public reading endpoints to enrich responses for signed-in students."""
+
+    if authorization is None or not authorization.startswith("Bearer "):
+        return None
+    try:
+        async with get_session_factory()() as session:
+            return await get_user_for_token(session, authorization.removeprefix("Bearer ").strip())
+    except AuthenticationError:
+        return None
+
+
+OptionalCurrentUser = Annotated[User | None, Depends(get_optional_current_user)]

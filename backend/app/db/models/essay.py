@@ -81,6 +81,9 @@ class Essay(UuidPrimaryKeyMixin, TimestampMixin, Base):
     grade_level: Mapped[str | None] = mapped_column(String(50))
     genre: Mapped[str | None] = mapped_column(String(50))
     writing_prompt: Mapped[str | None] = mapped_column(Text)
+    origin_type: Mapped[str] = mapped_column(
+        String(30), default="standard", server_default="standard", index=True
+    )
     full_score: Mapped[int] = mapped_column(Integer, default=100, server_default="100")
     original_text: Mapped[str | None] = mapped_column(Text)
     status: Mapped[EssayStatus] = mapped_column(

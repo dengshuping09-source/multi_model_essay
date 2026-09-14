@@ -70,9 +70,24 @@ def test_text_single_image_and_multi_image_submissions(tmp_path: Path) -> None:
             assert text_payload["root_essay_id"] == text_payload["id"]
             assert text_payload["parent_essay_id"] is None
             assert text_payload["version_no"] == 1
+            assert text_payload["origin_type"] == "standard"
             assert [source["source_type"] for source in text_payload["sources"]] == [
                 "text_input"
             ]
+
+            mock_response = await client.post(
+                "/api/essays",
+                data={
+                    "title": "模拟考场作文",
+                    "writing_prompt": "请以一次选择为题写一篇记叙文。",
+                    "original_text": "这是模拟考场中完成的作文内容。",
+                    "origin_type": "mock_exam",
+                },
+            )
+            assert mock_response.status_code == 201
+            mock_payload = mock_response.json()
+            essay_ids.append(UUID(mock_payload["id"]))
+            assert mock_payload["origin_type"] == "mock_exam"
 
             revision_response = await client.post(
                 "/api/essays",

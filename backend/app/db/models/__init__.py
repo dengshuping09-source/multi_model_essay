@@ -17,6 +17,7 @@ from app.db.models.essay import (
 )
 from app.db.models.image import ImageQualityAnalysis, ImageQualityStatus
 from app.db.models.identity import User, UserSession
+from app.db.models.material import MaterialFavorite
 from app.db.models.review import (
     AIAnnotation,
     FinalEvaluation,
@@ -29,6 +30,7 @@ from app.db.models.review import (
     ReviewStatus,
     ScoreEvidence,
 )
+from app.db.models.training import WritingTrainingSession
 
 __all__ = [
     "AIAnnotation",
@@ -41,6 +43,7 @@ __all__ = [
     "ImageQualityAnalysis",
     "ImageQualityStatus",
     "ModelReview",
+    "MaterialFavorite",
     "ReferenceAssessment",
     "RecheckStatus",
     "ReviewBatch",
@@ -60,4 +63,5 @@ __all__ = [
     "SourceType",
     "User",
     "UserSession",
+    "WritingTrainingSession",
 ]

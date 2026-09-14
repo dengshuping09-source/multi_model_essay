@@ -16,6 +16,7 @@ import {
   Download,
   Edit3,
   FileText,
+  Heart,
   Home,
   ImageUp,
   Images,
@@ -26,6 +27,7 @@ import {
   PenLine,
   RotateCcw,
   ScanText,
+  Search,
   Save,
   ShieldCheck,
   SlidersHorizontal,
@@ -211,6 +213,7 @@ interface SubmissionResponse {
   grade_level: string | null
   genre: string | null
   writing_prompt: string | null
+  origin_type: 'standard' | 'mock_exam'
   full_score: number
   original_text: string | null
   status: string
@@ -218,19 +221,77 @@ interface SubmissionResponse {
 }
 
 interface CurrentUser { id: string; email: string; display_name: string; grade_level?: string | null; default_genre?: string | null; avatar_available?: boolean }
-type AppView = 'home' | 'compose' | 'correction' | 'review' | 'report' | 'history' | 'settings'
+type AppView = 'home' | 'training' | 'topic-training' | 'micro-training' | 'mock-exam' | 'library' | 'compose' | 'correction' | 'review' | 'report' | 'history' | 'settings'
 type EssayWorkflowView = Extract<AppView, 'compose' | 'correction' | 'review' | 'report'>
 type ProtectedIntent = { view?: Exclude<AppView, 'home'>; essayMode?: 'text' | 'image' | 'demo' }
 type PersonalSection = 'growth' | 'essays' | 'settings'
 type AnnotationSelectionOrigin = 'text' | 'directory' | 'external'
 type AnnotationDirection = 'keep' | 'improve' | 'fix'
-interface EssayHistoryItem { id: string; root_essay_id: string; parent_essay_id: string | null; version_no: number; version_count: number; title: string | null; grade_level: string | null; genre: string | null; status: string; created_at: string; latest_score: number | null; image_count: number }
+interface EssayHistoryItem { id: string; root_essay_id: string; parent_essay_id: string | null; version_no: number; version_count: number; title: string | null; grade_level: string | null; genre: string | null; origin_type: 'standard' | 'mock_exam'; status: string; created_at: string; latest_score: number | null; image_count: number }
 interface GrowthDimensionPoint { essay_id: string; root_essay_id: string; version_no: number; title: string | null; evaluated_at: string; score: number; max_score: number }
 interface GrowthDimensionTrend { dimension: ReviewDimension['dimension']; direction: 'improving' | 'steady' | 'declining' | 'insufficient'; change: number | null; recent_change: number | null; points: GrowthDimensionPoint[] }
 interface GrowthOverallTrend { direction: 'improving' | 'steady' | 'declining' | 'insufficient'; change: number | null; recent_change: number | null; points: GrowthDimensionPoint[] }
 interface GrowthIssuePattern { category: string; issue_type: string | null; label: string; work_count: number; occurrence_count: number; latest_statement: string }
 interface GrowthImprovedIssue { essay_id: string; title: string | null; previous_version_no: number; current_version_no: number; category: string; issue_type: string | null; label: string; statement: string; explanation: string; evaluated_at: string }
 interface GrowthSummary { evaluation_count: number; work_count: number; has_long_term_insights: boolean; additional_works_needed: number; latest: { essay_id: string; title: string | null; evaluated_at: string; overall_score: number | null; dimension_scores: Array<{ dimension: ReviewDimension['dimension']; score: number; max_score: number }> } | null; recent_improvement_dimension: ReviewDimension['dimension'] | null; practice_dimension: ReviewDimension['dimension'] | null; practice_issue: GrowthIssuePattern | null; overall_trend?: GrowthOverallTrend; dimension_trends: GrowthDimensionTrend[]; recurring_issues: GrowthIssuePattern[]; improved_issues: GrowthImprovedIssue[]; revision_summary: { comparison_count: number; improved_count: number; steady_count: number; declined_count: number; most_improved_dimension: ReviewDimension['dimension'] | null; most_improved_dimension_count: number } }
+interface TopicTrainingFeedback {
+  topic_understanding: 'accurate' | 'mostly_accurate' | 'needs_revision'
+  idea_clarity: 'clear' | 'developing' | 'unclear'
+  off_topic_risk: 'low' | 'medium' | 'high'
+  structure_status: 'focused' | 'mostly_focused' | 'needs_revision'
+  missing_constraints: string[]
+  strengths: string[]
+  priority_issue: string
+  guidance: string[]
+  next_step: string
+}
+interface TopicTrainingSession {
+  id: string
+  training_type: string
+  topic_prompt: string
+  requirement_notes: string
+  central_idea: string
+  outline: string | null
+  status: 'running' | 'completed' | 'failed'
+  feedback: TopicTrainingFeedback | null
+  attempt_count: number
+  completed_at: string | null
+  created_at: string
+  updated_at: string
+}
+type MaterialCategory = '人物' | '事件' | '历史' | '科技' | '文化' | '社会' | '青春成长'
+interface WritingMaterial {
+  id: string
+  title: string
+  category: MaterialCategory
+  source_kind: '公共事实' | '生活观察'
+  background: string
+  core_facts: string[]
+  themes: string[]
+  supports_claims: string[]
+  how_to_use: string
+  common_misuse: string
+  example_use: string
+  fact_check_note: string
+  is_favorited: boolean
+}
+interface MaterialRecommendation {
+  material: WritingMaterial
+  reason: string
+  sources: string[]
+}
+interface MaterialRecommendationResponse {
+  items: MaterialRecommendation[]
+  personalized: boolean
+  context_available: boolean
+}
+type MicroExerciseType = 'opening' | 'outline_structure' | 'evidence_development' | 'paragraph_transition' | 'sentence_revision' | 'ending'
+interface TrainingRecommendation { exercise_type: MicroExerciseType; title: string; reason: string; personalized: boolean; evidence_work_count: number; source_label: string | null }
+interface MicroTrainingTask { task_id: string; exercise_type: MicroExerciseType; title: string; goal: string; prompt: string; context: string | null; instruction: string; input_hint: string; suggested_minutes: number; min_characters: number; max_characters: number }
+interface MicroTrainingFeedback { achievement: 'excellent' | 'met' | 'needs_practice'; strengths: string[]; priority_issue: string; suggestions: string[]; recommend_retry: boolean; next_step: string }
+interface MicroTrainingResult { id: string; task: MicroTrainingTask; response_text: string; status: 'completed' | 'failed'; feedback: MicroTrainingFeedback | null; completed_at: string | null; created_at: string }
+interface MockExamSnapshot { userId: string; topic: string; title: string; durationMinutes: number; startedAt: number; endsAt: number; essayText: string }
+interface PrewritingContext { topicPrompt: string; requirementNotes: string; centralIdea: string; outline: string }
 interface PendingRevisionMeta { parent_id: string; version: number; source_text: string; focus_items: string[] }
 interface EssayVersionSummary { id: string; root_essay_id: string; parent_essay_id: string | null; version_no: number; title: string | null; created_at: string; overall_score: number | null; dimension_scores: FinalEvaluationResult['dimension_scores']; summary: string | null; top_issue: string | null }
 interface EssayVersionHistory { root_essay_id: string; current_essay_id: string; items: EssayVersionSummary[] }
@@ -288,6 +349,7 @@ const MAX_IMAGES = 10
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024
 const MAX_TEXT_LENGTH = 50_000
 const REVISION_DRAFT_STORAGE_KEY = 'wenheng_revision_draft_v1'
+const MOCK_EXAM_STORAGE_KEY = 'wenheng_mock_exam_v1'
 const gradeOptionGroups = [
   { label: '小学', options: ['小学一年级', '小学二年级', '小学三年级', '小学四年级', '小学五年级', '小学六年级'] },
   { label: '初中', options: ['初一', '初二', '初三'] },
@@ -295,6 +357,16 @@ const gradeOptionGroups = [
 ] as const
 const gradeOptions = gradeOptionGroups.flatMap((group) => [...group.options])
 const genreOptions = ['记叙文', '议论文', '说明文', '应用文', '读后感', '其他']
+const topicTrainingSamples = [
+  '请以“那一次，我真正长大了”为题，写一篇记叙文。',
+  '生活中总有一些微小的事物带给我们温暖。请以“藏在细节里的温暖”为题写一篇作文。',
+  '阅读下面的材料，自选角度，自拟题目，写一篇文章：真正的勇敢不是没有害怕，而是害怕之后仍选择向前。',
+]
+const mockExamTopics = [
+  { title: '那一刻，我没有退缩', prompt: '请以“那一刻，我没有退缩”为题，写一篇记叙文。要求写清事情经过和自己的感受。' },
+  { title: '藏在细节里的温暖', prompt: '生活中总有一些微小的事物带给我们温暖。请以“藏在细节里的温暖”为题，写一篇作文。' },
+  { title: '勇敢地向前一步', prompt: '阅读材料：真正的勇敢不是没有害怕，而是害怕之后仍选择向前。请自选角度，自拟题目，写一篇文章。' },
+]
 const workflowSteps = ['提交作文', '确认文字', '多模型评阅', '综合判定', '查看反馈']
 const ALLOWED_MIME_TYPES = new Set([
   'image/jpeg', 'image/jpg', 'image/pjpeg', 'image/png', 'image/webp', 'image/avif',
@@ -342,6 +414,57 @@ const historyItems = ref<EssayHistoryItem[]>([])
 const growthSummary = ref<GrowthSummary | null>(null)
 const isLoadingGrowth = ref(false)
 const growthError = ref('')
+const trainingRecords = ref<TopicTrainingSession[]>([])
+const isLoadingTrainingRecords = ref(false)
+const trainingRecordsError = ref('')
+const topicTrainingId = ref<string | null>(null)
+const topicPrompt = ref('')
+const topicRequirementNotes = ref('')
+const topicCentralIdea = ref('')
+const topicOutline = ref('')
+const topicTrainingFeedback = ref<TopicTrainingFeedback | null>(null)
+const isSubmittingTopicTraining = ref(false)
+const topicTrainingError = ref('')
+const prewritingContext = ref<PrewritingContext | null>(null)
+const trainingRecommendations = ref<TrainingRecommendation[]>([])
+const recommendationsPersonalized = ref(false)
+const evaluatedTrainingWorkCount = ref(0)
+const isLoadingRecommendations = ref(false)
+const recommendationError = ref('')
+const materialCategories: MaterialCategory[] = ['人物', '事件', '历史', '科技', '文化', '社会', '青春成长']
+const materials = ref<WritingMaterial[]>([])
+const selectedMaterial = ref<WritingMaterial | null>(null)
+const materialRecommendations = ref<MaterialRecommendation[]>([])
+const materialSearchQuery = ref('')
+const materialCategory = ref<MaterialCategory | ''>('')
+const materialsFavoritesOnly = ref(false)
+const materialTopicContext = ref('')
+const materialIdeaContext = ref('')
+const materialIssueContext = ref('')
+const materialReturnView = ref<AppView | null>(null)
+const isLoadingMaterials = ref(false)
+const isLoadingMaterialRecommendations = ref(false)
+const materialError = ref('')
+const materialRecommendationError = ref('')
+const pendingMaterialFavoriteId = ref<string | null>(null)
+const materialDetailRef = ref<HTMLElement | null>(null)
+const microTrainingTask = ref<MicroTrainingTask | null>(null)
+const microTrainingAnswer = ref('')
+const microTrainingFeedback = ref<MicroTrainingFeedback | null>(null)
+const microTrainingError = ref('')
+const isLoadingMicroTraining = ref(false)
+const isSubmittingMicroTraining = ref(false)
+const submissionOrigin = ref<'standard' | 'mock_exam'>('standard')
+const mockExamTopicMode = ref<'system' | 'custom'>('system')
+const mockExamSelectedTopic = ref(mockExamTopics[0].prompt)
+const mockExamCustomTopic = ref('')
+const mockExamTitle = ref(mockExamTopics[0].title)
+const mockExamDurationMinutes = ref(45)
+const mockExamStartedAt = ref<number | null>(null)
+const mockExamEndsAt = ref<number | null>(null)
+const mockExamText = ref('')
+const mockExamNow = ref(Date.now())
+const mockExamError = ref('')
 const reviewBatch = ref<ReviewBatchResult | null>(null)
 const isBatchReviewing = ref(false)
 const selectedReviewMode = ref<'quick' | 'deep'>('quick')
@@ -405,6 +528,7 @@ let depthAnalysisPollingGeneration = 0
 let ocrPollingGeneration = 0
 let reportAnnotationEmphasisTimer: number | null = null
 let selectedImageIdSequence = 0
+let mockExamTimer: ReturnType<typeof setInterval> | null = null
 
 const isBusy = computed(() => isSubmitting.value || isRecognizing.value || isSavingCorrection.value || isBatchReviewing.value || isRechecking.value || isRestoringHistory.value)
 const hasEssayTaskContent = computed(() => Boolean(
@@ -425,6 +549,28 @@ const canSubmit = computed(
     && (!pendingRevision.value || revisionHasChanges.value)
     && !isBusy.value,
 )
+const canSubmitTopicTraining = computed(() => Boolean(
+  topicPrompt.value.trim().length >= 4
+  && topicRequirementNotes.value.trim().length >= 2
+  && topicCentralIdea.value.trim().length >= 4
+  && !isSubmittingTopicTraining.value,
+))
+const canSubmitMicroTraining = computed(() => Boolean(
+  microTrainingTask.value
+  && microTrainingAnswer.value.trim().length >= microTrainingTask.value.min_characters
+  && microTrainingAnswer.value.trim().length <= microTrainingTask.value.max_characters
+  && !isSubmittingMicroTraining.value,
+))
+const activeMockExamTopic = computed(() => mockExamTopicMode.value === 'custom' ? mockExamCustomTopic.value.trim() : mockExamSelectedTopic.value)
+const mockExamIsRunning = computed(() => mockExamStartedAt.value !== null && mockExamEndsAt.value !== null)
+const mockExamRemainingSeconds = computed(() => Math.max(0, Math.ceil(((mockExamEndsAt.value ?? 0) - mockExamNow.value) / 1000)))
+const mockExamExpired = computed(() => mockExamIsRunning.value && mockExamRemainingSeconds.value === 0)
+const mockExamTimeLabel = computed(() => {
+  const minutes = Math.floor(mockExamRemainingSeconds.value / 60)
+  const seconds = mockExamRemainingSeconds.value % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+})
+const canStartMockExam = computed(() => Boolean(activeMockExamTopic.value.length >= 4 && mockExamDurationMinutes.value >= 20))
 const submitDisabledReason = computed(() => {
   if (isBusy.value) return '正在处理当前内容，请稍候。'
   if (pendingRevision.value && !revisionHasChanges.value) return `请先修改正文，再开始第 ${pendingRevision.value.version} 版评测。`
@@ -1372,7 +1518,7 @@ function closeAuthentication(): void {
 }
 
 function navigate(view: AppView): void {
-  if (view !== 'home' && !currentUser.value) {
+  if (!['home', 'training', 'library'].includes(view) && !currentUser.value) {
     openAuthentication('login', { view: view as Exclude<AppView, 'home'> })
     return
   }
@@ -1391,6 +1537,15 @@ function navigate(view: AppView): void {
     void loadHistory()
     if (settingsSection.value === 'growth') void loadGrowth()
   }
+  if (view === 'training') {
+    void loadTrainingRecords()
+    void loadTrainingRecommendations()
+  }
+  if (view === 'library') {
+    void loadMaterials()
+    void loadMaterialRecommendations()
+  }
+  if (view === 'mock-exam') restoreMockExam()
 }
 
 async function startEssay(mode: 'text' | 'image'): Promise<void> {
@@ -1456,6 +1611,7 @@ async function restoreSession(): Promise<void> {
   loadUserPreferences(currentUser.value, false)
   await loadHistory()
   restoreRevisionDraft()
+  restoreMockExam()
 }
 
 async function submitAuthentication(): Promise<void> {
@@ -1514,12 +1670,17 @@ async function logout(): Promise<void> {
   if (authToken.value) await apiFetch(`${apiBaseUrl}/api/auth/logout`, { method: 'POST' })
   localStorage.removeItem('essay_access_token')
   clearRevisionDraftStorage()
+  clearMockExam()
   authToken.value = ''
   currentUser.value = null
   temporaryEssayId.value = null
   historyItems.value = []
   growthSummary.value = null
   growthError.value = ''
+  trainingRecords.value = []
+  trainingRecordsError.value = ''
+  resetTopicTraining()
+  prewritingContext.value = null
   versionHistory.value = null
   reviewBatch.value = null
   activeEssayView.value = null
@@ -1547,6 +1708,445 @@ async function loadGrowth(): Promise<void> {
   } finally {
     isLoadingGrowth.value = false
   }
+}
+
+async function loadTrainingRecords(): Promise<void> {
+  if (!currentUser.value || isLoadingTrainingRecords.value) return
+  isLoadingTrainingRecords.value = true
+  trainingRecordsError.value = ''
+  try {
+    const response = await apiFetch(`${apiBaseUrl}/api/training/topic-analysis`)
+    const payload = await response.json().catch(() => ({})) as { items?: TopicTrainingSession[]; detail?: string }
+    if (!response.ok) throw new Error(safeServerMessage(payload.detail, '训练记录暂时无法加载'))
+    trainingRecords.value = payload.items ?? []
+  } catch (error) {
+    trainingRecordsError.value = userFacingError(error, '训练记录暂时无法加载，请稍后重试。')
+  } finally {
+    isLoadingTrainingRecords.value = false
+  }
+}
+
+async function loadTrainingRecommendations(): Promise<void> {
+  if (!currentUser.value || isLoadingRecommendations.value) return
+  isLoadingRecommendations.value = true
+  recommendationError.value = ''
+  try {
+    const response = await apiFetch(`${apiBaseUrl}/api/training/recommendations`)
+    const payload = await response.json().catch(() => ({})) as { personalized?: boolean; evaluated_work_count?: number; items?: TrainingRecommendation[]; detail?: string }
+    if (!response.ok) throw new Error(safeServerMessage(payload.detail, '训练推荐暂时无法加载'))
+    trainingRecommendations.value = payload.items ?? []
+    recommendationsPersonalized.value = Boolean(payload.personalized)
+    evaluatedTrainingWorkCount.value = payload.evaluated_work_count ?? 0
+  } catch (error) {
+    recommendationError.value = userFacingError(error, '训练推荐暂时无法加载，请稍后重试。')
+  } finally {
+    isLoadingRecommendations.value = false
+  }
+}
+
+const hasMaterialRecommendationContext = computed(() => Boolean(
+  materialTopicContext.value.trim() || materialIdeaContext.value.trim() || materialIssueContext.value.trim(),
+))
+
+async function loadMaterials(): Promise<void> {
+  if (isLoadingMaterials.value) return
+  isLoadingMaterials.value = true
+  materialError.value = ''
+  try {
+    const params = new URLSearchParams()
+    if (materialSearchQuery.value.trim()) params.set('query', materialSearchQuery.value.trim())
+    if (materialCategory.value) params.set('category', materialCategory.value)
+    if (materialsFavoritesOnly.value) params.set('favorites_only', 'true')
+    const suffix = params.size ? `?${params.toString()}` : ''
+    const response = await apiFetch(`${apiBaseUrl}/api/materials/${suffix}`)
+    const payload = await response.json().catch(() => ({})) as { items?: WritingMaterial[]; detail?: string }
+    if (!response.ok) throw new Error(safeServerMessage(payload.detail, '素材暂时无法加载'))
+    materials.value = payload.items ?? []
+    if (!selectedMaterial.value || !materials.value.some((item) => item.id === selectedMaterial.value?.id)) {
+      selectedMaterial.value = materials.value[0] ?? null
+    } else {
+      selectedMaterial.value = materials.value.find((item) => item.id === selectedMaterial.value?.id) ?? null
+    }
+  } catch (error) {
+    materialError.value = userFacingError(error, '素材暂时无法加载，请稍后重试。')
+  } finally {
+    isLoadingMaterials.value = false
+  }
+}
+
+async function loadMaterialRecommendations(): Promise<void> {
+  if (isLoadingMaterialRecommendations.value) return
+  isLoadingMaterialRecommendations.value = true
+  materialRecommendationError.value = ''
+  try {
+    const params = new URLSearchParams()
+    if (materialTopicContext.value.trim()) params.set('topic', materialTopicContext.value.trim())
+    if (materialIdeaContext.value.trim()) params.set('idea', materialIdeaContext.value.trim())
+    if (materialIssueContext.value.trim()) params.set('issue', materialIssueContext.value.trim())
+    const suffix = params.size ? `?${params.toString()}` : ''
+    const response = await apiFetch(`${apiBaseUrl}/api/materials/recommendations${suffix}`)
+    const payload = await response.json().catch(() => ({})) as MaterialRecommendationResponse & { detail?: string }
+    if (!response.ok) throw new Error(safeServerMessage(payload.detail, '相关素材暂时无法推荐'))
+    materialRecommendations.value = payload.items ?? []
+  } catch (error) {
+    materialRecommendationError.value = userFacingError(error, '相关素材暂时无法推荐，请稍后重试。')
+  } finally {
+    isLoadingMaterialRecommendations.value = false
+  }
+}
+
+function selectMaterial(material: WritingMaterial): void {
+  selectedMaterial.value = material
+  void nextTick(() => materialDetailRef.value?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }))
+}
+
+function openMaterialLibrary(context?: { topic?: string; idea?: string; issue?: string; returnView?: AppView | null }): void {
+  materialTopicContext.value = context?.topic?.trim() ?? ''
+  materialIdeaContext.value = context?.idea?.trim() ?? ''
+  materialIssueContext.value = context?.issue?.trim() ?? ''
+  materialReturnView.value = context?.returnView ?? null
+  mobileMenuOpen.value = false
+  currentView.value = 'library'
+  void loadMaterials()
+  void loadMaterialRecommendations()
+}
+
+function openMaterialLibraryFromTopicTraining(): void {
+  openMaterialLibrary({
+    topic: topicPrompt.value,
+    idea: topicCentralIdea.value,
+    returnView: 'topic-training',
+  })
+}
+
+function openMaterialLibraryFromReport(): void {
+  const issue = reportTopIssues.value.map((item) => item.suggestion).join('；')
+  openMaterialLibrary({
+    topic: writingPrompt.value || title.value,
+    issue,
+    returnView: 'report',
+  })
+}
+
+function clearMaterialRecommendationContext(): void {
+  materialTopicContext.value = ''
+  materialIdeaContext.value = ''
+  materialIssueContext.value = ''
+  materialReturnView.value = null
+  void loadMaterialRecommendations()
+}
+
+function returnFromMaterialLibrary(): void {
+  const destination = materialReturnView.value
+  materialReturnView.value = null
+  if (destination) {
+    navigate(destination)
+    return
+  }
+  navigate('training')
+}
+
+async function toggleMaterialFavorite(material: WritingMaterial): Promise<void> {
+  if (!currentUser.value) {
+    openAuthentication('login', { view: 'library' })
+    return
+  }
+  if (pendingMaterialFavoriteId.value) return
+  pendingMaterialFavoriteId.value = material.id
+  materialError.value = ''
+  try {
+    const response = await apiFetch(`${apiBaseUrl}/api/materials/${material.id}/favorite`, {
+      method: material.is_favorited ? 'DELETE' : 'PUT',
+    })
+    const payload = await response.json().catch(() => ({})) as { is_favorited?: boolean; detail?: string }
+    if (!response.ok) throw new Error(safeServerMessage(payload.detail, '收藏状态暂时无法更新'))
+    const update = (item: WritingMaterial): WritingMaterial => item.id === material.id
+      ? { ...item, is_favorited: Boolean(payload.is_favorited) }
+      : item
+    materials.value = materials.value.map(update)
+    materialRecommendations.value = materialRecommendations.value.map((item) => ({ ...item, material: update(item.material) }))
+    if (selectedMaterial.value?.id === material.id) selectedMaterial.value = update(selectedMaterial.value)
+    if (materialsFavoritesOnly.value && !payload.is_favorited) await loadMaterials()
+  } catch (error) {
+    materialError.value = userFacingError(error, '收藏状态暂时无法更新，请稍后重试。')
+  } finally {
+    pendingMaterialFavoriteId.value = null
+  }
+}
+
+function microExerciseLabel(type: MicroExerciseType): string {
+  return ({
+    opening: '开头训练',
+    outline_structure: '结构与提纲',
+    evidence_development: '论据选择与展开',
+    paragraph_transition: '段落衔接',
+    sentence_revision: '句式修改',
+    ending: '结尾与点题',
+  } satisfies Record<MicroExerciseType, string>)[type]
+}
+
+function scrollToTrainingRecommendations(): void {
+  document.getElementById('training-recommendations')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+async function startMicroTraining(exerciseType: MicroExerciseType): Promise<void> {
+  if (!currentUser.value) {
+    openAuthentication('login', { view: 'training' })
+    return
+  }
+  isLoadingMicroTraining.value = true
+  microTrainingError.value = ''
+  microTrainingAnswer.value = ''
+  microTrainingFeedback.value = null
+  currentView.value = 'micro-training'
+  mobileMenuOpen.value = false
+  try {
+    const response = await apiFetch(`${apiBaseUrl}/api/training/micro-exercises/${exerciseType}`)
+    const payload = await response.json().catch(() => ({})) as MicroTrainingTask & { detail?: string }
+    if (!response.ok) throw new Error(safeServerMessage(payload.detail, '训练题暂时无法加载'))
+    microTrainingTask.value = payload
+  } catch (error) {
+    microTrainingTask.value = null
+    microTrainingError.value = userFacingError(error, '训练题暂时无法加载，请返回后重试。')
+  } finally {
+    isLoadingMicroTraining.value = false
+  }
+}
+
+async function submitMicroTraining(): Promise<void> {
+  if (!microTrainingTask.value || !canSubmitMicroTraining.value || isSubmittingMicroTraining.value) return
+  isSubmittingMicroTraining.value = true
+  microTrainingError.value = ''
+  try {
+    const response = await apiFetch(`${apiBaseUrl}/api/training/micro-exercises`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: microTrainingTask.value.task_id, response_text: microTrainingAnswer.value }),
+    })
+    const payload = await response.json().catch(() => ({})) as MicroTrainingResult & { detail?: string }
+    if (!response.ok) throw new Error(safeServerMessage(payload.detail, '训练反馈暂时没有完成'))
+    microTrainingFeedback.value = payload.feedback
+  } catch (error) {
+    microTrainingError.value = userFacingError(error, '训练反馈暂时没有完成，你的作答仍然保留，可以直接重试。')
+  } finally {
+    isSubmittingMicroTraining.value = false
+  }
+}
+
+function retryMicroTraining(): void {
+  microTrainingFeedback.value = null
+  microTrainingError.value = ''
+  void nextTick(() => document.getElementById('micro-training-answer')?.focus())
+}
+
+function startMockExamTimer(): void {
+  if (mockExamTimer !== null) clearInterval(mockExamTimer)
+  mockExamNow.value = Date.now()
+  mockExamTimer = setInterval(() => {
+    mockExamNow.value = Date.now()
+    if (mockExamEndsAt.value !== null && mockExamNow.value >= mockExamEndsAt.value && mockExamTimer !== null) {
+      clearInterval(mockExamTimer)
+      mockExamTimer = null
+      persistMockExam()
+    }
+  }, 1000)
+}
+
+function persistMockExam(): void {
+  if (!currentUser.value || !mockExamIsRunning.value || mockExamStartedAt.value === null || mockExamEndsAt.value === null) return
+  const snapshot: MockExamSnapshot = {
+    userId: currentUser.value.id,
+    topic: activeMockExamTopic.value,
+    title: mockExamTitle.value.trim(),
+    durationMinutes: mockExamDurationMinutes.value,
+    startedAt: mockExamStartedAt.value,
+    endsAt: mockExamEndsAt.value,
+    essayText: mockExamText.value,
+  }
+  sessionStorage.setItem(MOCK_EXAM_STORAGE_KEY, JSON.stringify(snapshot))
+}
+
+function restoreMockExam(): void {
+  if (!currentUser.value) return
+  const stored = sessionStorage.getItem(MOCK_EXAM_STORAGE_KEY)
+  if (!stored) return
+  try {
+    const snapshot = JSON.parse(stored) as Partial<MockExamSnapshot>
+    if (snapshot.userId !== currentUser.value.id || !snapshot.topic || !snapshot.startedAt || !snapshot.endsAt) return
+    mockExamTopicMode.value = 'custom'
+    mockExamCustomTopic.value = snapshot.topic
+    mockExamTitle.value = snapshot.title ?? ''
+    mockExamDurationMinutes.value = snapshot.durationMinutes ?? 45
+    mockExamStartedAt.value = snapshot.startedAt
+    mockExamEndsAt.value = snapshot.endsAt
+    mockExamText.value = snapshot.essayText ?? ''
+    mockExamNow.value = Date.now()
+    startMockExamTimer()
+  } catch {
+    sessionStorage.removeItem(MOCK_EXAM_STORAGE_KEY)
+  }
+}
+
+function clearMockExam(): void {
+  sessionStorage.removeItem(MOCK_EXAM_STORAGE_KEY)
+  if (mockExamTimer !== null) clearInterval(mockExamTimer)
+  mockExamTimer = null
+  mockExamStartedAt.value = null
+  mockExamEndsAt.value = null
+  mockExamText.value = ''
+  mockExamError.value = ''
+}
+
+function selectMockExamTopic(prompt: string): void {
+  mockExamSelectedTopic.value = prompt
+  mockExamTitle.value = mockExamTopics.find((item) => item.prompt === prompt)?.title ?? ''
+}
+
+function openMockExam(): void {
+  if (!currentUser.value) {
+    openAuthentication('login', { view: 'mock-exam' })
+    return
+  }
+  restoreMockExam()
+  navigate('mock-exam')
+}
+
+function startMockExam(): void {
+  if (!canStartMockExam.value || mockExamIsRunning.value) return
+  const now = Date.now()
+  mockExamStartedAt.value = now
+  mockExamEndsAt.value = now + mockExamDurationMinutes.value * 60_000
+  mockExamNow.value = now
+  mockExamText.value = ''
+  mockExamError.value = ''
+  persistMockExam()
+  startMockExamTimer()
+}
+
+function submitMockExamToEvaluation(): void {
+  if (!mockExamIsRunning.value) return
+  if (!mockExamText.value.trim()) {
+    mockExamError.value = '作文还没有内容。即使时间到了，也请先写下已完成的部分。'
+    return
+  }
+  const topic = activeMockExamTopic.value
+  const examTitle = mockExamTitle.value.trim()
+  const completedText = mockExamText.value.trim()
+  newEssay()
+  submissionOrigin.value = 'mock_exam'
+  submissionMode.value = 'text'
+  title.value = examTitle
+  writingPrompt.value = topic
+  essayText.value = completedText
+  selectedReviewMode.value = 'quick'
+  showEssayDetails.value = true
+  setEssayStage('compose', true)
+}
+
+function resetTopicTraining(): void {
+  topicTrainingId.value = null
+  topicPrompt.value = ''
+  topicRequirementNotes.value = ''
+  topicCentralIdea.value = ''
+  topicOutline.value = ''
+  topicTrainingFeedback.value = null
+  topicTrainingError.value = ''
+}
+
+function beginTopicTraining(): void {
+  if (!currentUser.value) {
+    openAuthentication('login', { view: 'topic-training' })
+    return
+  }
+  resetTopicTraining()
+  navigate('topic-training')
+}
+
+function openTopicTrainingRecord(record: TopicTrainingSession): void {
+  topicTrainingId.value = record.id
+  topicPrompt.value = record.topic_prompt
+  topicRequirementNotes.value = record.requirement_notes
+  topicCentralIdea.value = record.central_idea
+  topicOutline.value = record.outline ?? ''
+  topicTrainingFeedback.value = record.feedback
+  topicTrainingError.value = record.status === 'failed' ? '上次反馈没有生成完成，你填写的内容仍在，可以直接重试。' : ''
+  navigate('topic-training')
+}
+
+function reviseTopicTraining(): void {
+  topicTrainingFeedback.value = null
+  topicTrainingError.value = ''
+  void nextTick(() => document.getElementById('topic-training-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+}
+
+async function submitTopicTraining(): Promise<void> {
+  if (!currentUser.value) {
+    openAuthentication('login', { view: 'topic-training' })
+    return
+  }
+  if (!canSubmitTopicTraining.value) return
+  isSubmittingTopicTraining.value = true
+  topicTrainingError.value = ''
+  try {
+    const response = await apiFetch(
+      `${apiBaseUrl}/api/training/topic-analysis${topicTrainingId.value ? `/${topicTrainingId.value}` : ''}`,
+      {
+        method: topicTrainingId.value ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          topic_prompt: topicPrompt.value,
+          requirement_notes: topicRequirementNotes.value,
+          central_idea: topicCentralIdea.value,
+          outline: topicOutline.value || null,
+        }),
+      },
+    )
+    const payload = await response.json().catch(() => ({})) as TopicTrainingSession & { detail?: string }
+    if (!response.ok) throw new Error(safeServerMessage(payload.detail, '训练反馈暂时没有生成完成'))
+    topicTrainingId.value = payload.id
+    topicTrainingFeedback.value = payload.feedback
+    await loadTrainingRecords()
+    void nextTick(() => document.getElementById('topic-training-result')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  } catch (error) {
+    topicTrainingError.value = userFacingError(error, '训练反馈暂时没有生成完成，你填写的内容仍在，可以直接重试。')
+    await loadTrainingRecords()
+  } finally {
+    isSubmittingTopicTraining.value = false
+  }
+}
+
+function topicTrainingStatusText(kind: 'topic' | 'idea' | 'risk' | 'structure', value: string): string {
+  const labels: Record<string, string> = {
+    accurate: '要求把握准确', mostly_accurate: '主要要求已抓住', needs_revision: '还需补充题目要求',
+    clear: '立意清楚', developing: '立意方向基本清楚', unclear: '立意还需聚焦',
+    low: '偏题风险较低', medium: '有一定偏题风险', high: '偏题风险较高',
+    focused: '思路围绕中心', mostly_focused: '思路基本围绕中心', needs_revision_structure: '结构思路还需调整',
+  }
+  if (kind === 'structure' && value === 'needs_revision') return labels.needs_revision_structure
+  return labels[value] ?? '暂未形成判断'
+}
+
+function topicTrainingStatusTone(value: string): 'good' | 'notice' | 'focus' {
+  if (['accurate', 'clear', 'low', 'focused'].includes(value)) return 'good'
+  if (['mostly_accurate', 'developing', 'medium', 'mostly_focused'].includes(value)) return 'notice'
+  return 'focus'
+}
+
+function startWritingFromTraining(): void {
+  if (!topicTrainingFeedback.value) return
+  const context: PrewritingContext = {
+    topicPrompt: topicPrompt.value.trim(),
+    requirementNotes: topicRequirementNotes.value.trim(),
+    centralIdea: topicCentralIdea.value.trim(),
+    outline: topicOutline.value.trim(),
+  }
+  newEssay()
+  prewritingContext.value = context
+  title.value = context.topicPrompt.match(/[“\"]([^”\"]{1,80})[”\"]/)?.[1]?.trim() ?? ''
+  writingPrompt.value = context.topicPrompt
+  submissionMode.value = 'text'
+  showEssayDetails.value = true
+  setEssayStage('compose', true)
 }
 
 function clearRevisionDraftStorage(): void {
@@ -2212,6 +2812,8 @@ function newEssay(): void {
   versionTextComparison.value = null
   submissionMode.value = 'image'
   pendingRevision.value = null
+  prewritingContext.value = null
+  submissionOrigin.value = 'standard'
   showEssayDetails.value = false
   setEssayStage('compose', true)
 }
@@ -2244,6 +2846,7 @@ function reviseEssay(initialText?: string): void {
   const preservedGenre = genre.value
   const preservedPrompt = writingPrompt.value
   const preservedFullScore = fullScore.value
+  const preservedOrigin = submissionOrigin.value
   const focusItems = reportTopIssues.value.slice(0, 3).map((issue) => issue.suggestion)
   newEssay()
   pendingRevision.value = {
@@ -2257,6 +2860,7 @@ function reviseEssay(initialText?: string): void {
   genre.value = preservedGenre
   writingPrompt.value = preservedPrompt
   fullScore.value = preservedFullScore
+  submissionOrigin.value = preservedOrigin
   essayText.value = revisedText
   submissionMode.value = 'text'
 }
@@ -2325,6 +2929,7 @@ async function openHistoryEssay(item: Pick<EssayHistoryItem, 'id'>, preferredVie
     gradeLevel.value = essay.grade_level ?? ''
     genre.value = essay.genre ?? ''
     writingPrompt.value = essay.writing_prompt ?? ''
+    submissionOrigin.value = essay.origin_type ?? 'standard'
     fullScore.value = essay.full_score
     essayText.value = essay.original_text ?? ''
     selectedImages.value = essay.sources
@@ -2606,6 +3211,7 @@ async function submitEssay(): Promise<void> {
   if (gradeLevel.value.trim()) formData.append('grade_level', gradeLevel.value.trim())
   if (genre.value.trim()) formData.append('genre', genre.value.trim())
   if (writingPrompt.value.trim()) formData.append('writing_prompt', writingPrompt.value.trim())
+  formData.append('origin_type', submissionOrigin.value)
   formData.append('full_score', String(fullScore.value))
   if (pendingRevision.value) formData.append('parent_essay_id', pendingRevision.value.parent_id)
   if (submissionMode.value === 'text' && essayText.value.trim()) formData.append('original_text', essayText.value.trim())
@@ -2628,6 +3234,8 @@ async function submitEssay(): Promise<void> {
       throw new Error(safeServerMessage(payload.detail, '作文暂时无法提交，请重试'))
     }
     successResult.value = payload
+    submissionOrigin.value = payload.origin_type ?? submissionOrigin.value
+    if (submissionOrigin.value === 'mock_exam') clearMockExam()
     temporaryEssayId.value = payload.id
     clearReviewResult()
     const imageSources = payload.sources.filter((source) => source.source_type === 'image_upload')
@@ -2686,6 +3294,7 @@ async function loadDemoEssay(): Promise<void> {
     fullScore.value = payload.full_score
     essayText.value = payload.original_text ?? ''
     submissionMode.value = 'text'
+    submissionOrigin.value = 'standard'
     setEssayStage('review', true)
   } catch (error) {
     errorMessage.value = userFacingError(error, '示例作文暂时无法打开，请稍后重试')
@@ -2742,6 +3351,10 @@ watch(
   () => persistRevisionDraft(),
   { deep: true },
 )
+watch(
+  [mockExamText, mockExamTitle, mockExamDurationMinutes, mockExamCustomTopic, mockExamSelectedTopic],
+  () => persistMockExam(),
+)
 
 onMounted(() => { void restoreSession() })
 onBeforeUnmount(() => {
@@ -2749,6 +3362,7 @@ onBeforeUnmount(() => {
   stopReviewPolling()
   stopDepthAnalysisPolling()
   if (reportAnnotationEmphasisTimer) window.clearTimeout(reportAnnotationEmphasisTimer)
+  if (mockExamTimer !== null) clearInterval(mockExamTimer)
   clearImages()
   revokeMediaUrls()
 })
@@ -2760,12 +3374,14 @@ onBeforeUnmount(() => {
       <div class="header-inner">
         <button class="brand-lockup" type="button" aria-label="返回首页" @click="navigate('home')">
           <span class="brand-mark" aria-hidden="true"><img :src="wenhengLogoMark" alt="" /></span>
-          <span><strong>文衡</strong><small>作文评测与写作提升</small></span>
+          <span><strong>文衡</strong><small>写作训练与作文提升</small></span>
         </button>
         <nav class="desktop-nav" aria-label="主导航">
           <button type="button" :class="{ active: currentView === 'home' }" @click="navigate('home')"><Home :size="17" />首页</button>
+          <button type="button" :class="{ active: ['training', 'topic-training', 'micro-training', 'mock-exam'].includes(currentView) }" @click="navigate('training')"><BookOpen :size="17" />写作训练</button>
           <button type="button" :class="{ active: ['compose', 'correction', 'review', 'report'].includes(currentView) }" @click="startEssay('image')"><PenLine :size="17" />作文评测</button>
-          <button type="button" :class="{ active: ['history', 'settings'].includes(currentView) }" @click="navigate('settings')"><UserRound :size="17" />个人中心</button>
+          <button type="button" :class="{ active: currentView === 'library' }" @click="openMaterialLibrary()"><FileText :size="17" />素材库</button>
+          <button type="button" :class="{ active: currentView === 'settings' && settingsSection === 'growth' }" @click="settingsSection = 'growth'; navigate('settings')"><BarChart3 :size="17" />成长中心</button>
         </nav>
         <div class="header-user">
           <template v-if="currentUser">
@@ -2783,8 +3399,10 @@ onBeforeUnmount(() => {
       </div>
       <nav v-if="mobileMenuOpen" class="mobile-menu" aria-label="移动端导航">
         <button type="button" @click="navigate('home')"><Home :size="18" />首页</button>
+        <button type="button" @click="navigate('training')"><BookOpen :size="18" />写作训练</button>
         <button type="button" @click="startEssay('image')"><PenLine :size="18" />作文评测</button>
-        <button type="button" @click="navigate('settings')"><UserRound :size="18" />个人中心</button>
+        <button type="button" @click="openMaterialLibrary()"><FileText :size="18" />素材库</button>
+        <button type="button" @click="settingsSection = 'growth'; navigate('settings')"><BarChart3 :size="18" />成长中心</button>
         <div v-if="!currentUser" class="mobile-auth-actions"><button type="button" @click="openAuthentication('login')">登录</button><button type="button" @click="openAuthentication('register')">注册</button></div>
       </nav>
     </header>
@@ -2793,7 +3411,7 @@ onBeforeUnmount(() => {
       <section v-if="currentView === 'home'" class="home-view page-container">
         <section class="public-hero" :class="{ 'public-hero--returning': currentUser }">
           <div class="hero-copy">
-            <p class="eyebrow">{{ currentUser ? `${firstName}，欢迎回来` : '作文评测与写作提升' }}</p>
+            <p class="eyebrow">{{ currentUser ? `${firstName}，欢迎回来` : '写作训练与作文提升' }}</p>
             <template v-if="currentUser">
               <h1>{{ hasResumableEssay ? '接着刚才的作文，' : '交上一篇作文，' }}<br /><span>{{ hasResumableEssay ? '继续完成这次评测。' : '看看下一步怎么改。' }}</span></h1>
               <p class="hero-lead">{{ hasResumableEssay ? '刚才的内容还在，继续后会回到离开前的步骤。' : latestHistoryEssay ? `最近完成《${latestHistoryEssay.title || '未命名作文'}》，现在可以开始新评测，或回看上一次反馈。` : '拍下手写稿或粘贴电子稿，先看核心结果，再按反馈继续修改。' }}</p>
@@ -2843,6 +3461,247 @@ onBeforeUnmount(() => {
 
         <section class="privacy-band">
           <span><ShieldCheck :size="28" /></span><div><p class="eyebrow">隐私与保护</p><h2>你的作文，只属于你</h2><p>作文原稿、识别内容和评测记录仅对当前账号可见。</p></div>
+        </section>
+      </section>
+
+      <section v-if="currentView === 'training'" class="training-view page-container">
+        <header class="training-page-heading">
+          <div>
+            <p class="eyebrow">写作训练</p>
+            <h1>先练一个关键动作，再开始写作</h1>
+            <p>每次训练只解决一个具体问题。先学会自己判断，再带着思路进入正式写作。</p>
+          </div>
+          <button class="secondary-button" type="button" @click="startEssay('text')"><PenLine :size="17" />直接开始作文评测</button>
+        </header>
+
+        <div class="training-card-grid">
+          <article class="training-card training-card--primary">
+            <div class="training-card-icon"><BookOpen :size="25" /></div>
+            <div class="training-card-copy">
+              <span class="training-availability">现在可练</span>
+              <h2>审题与立意训练</h2>
+              <p>先读懂题目限制，想清楚中心和写作思路，减少动笔后才发现偏题的情况。</p>
+              <ul><li>抓住关键词与限制</li><li>检查立意是否清楚</li><li>梳理围绕中心的提纲</li></ul>
+            </div>
+            <button class="primary-button" type="button" @click="beginTopicTraining">开始训练<ArrowRight :size="17" /></button>
+          </article>
+          <article class="training-card">
+            <div class="training-card-icon"><BarChart3 :size="24" /></div>
+            <div class="training-card-copy"><span class="training-availability">5～10 分钟</span><h2>弱项专项训练</h2><p>根据正式评测中反复出现的问题，推荐一个具体能力练习。</p></div>
+            <button class="secondary-button" type="button" @click="scrollToTrainingRecommendations">查看推荐<ArrowRight :size="17" /></button>
+          </article>
+          <article class="training-card">
+            <div class="training-card-icon"><Edit3 :size="24" /></div>
+            <div class="training-card-copy"><span class="training-availability">{{ mockExamIsRunning ? '写作进行中' : '现在可用' }}</span><h2>模拟考场</h2><p>在安静、限时的环境里完成一篇作文，再进入现有正式评测。</p></div>
+            <button class="secondary-button" type="button" @click="openMockExam">{{ mockExamIsRunning ? '继续写作' : '进入考场' }}<ArrowRight :size="17" /></button>
+          </article>
+        </div>
+
+        <section v-if="currentUser" id="training-recommendations" class="training-recommendations" aria-labelledby="training-recommendations-title">
+          <div class="training-section-heading">
+            <div><p class="eyebrow">{{ recommendationsPersonalized ? '根据你的正式评测' : '基础练习' }}</p><h2 id="training-recommendations-title">{{ recommendationsPersonalized ? '从最近反复出现的问题开始' : '先练最常用的写作能力' }}</h2></div>
+            <p v-if="recommendationsPersonalized">基于 {{ evaluatedTrainingWorkCount }} 篇已完成评测的作文</p>
+          </div>
+          <p v-if="isLoadingRecommendations && !trainingRecommendations.length" class="loading-state"><LoaderCircle :size="19" class="spin" />正在整理适合你的练习…</p>
+          <div v-else-if="recommendationError && !trainingRecommendations.length" class="training-empty"><CircleAlert :size="24" /><div><strong>训练推荐暂时无法加载</strong><p>{{ recommendationError }}</p></div><button class="text-button" type="button" @click="void loadTrainingRecommendations">重新加载</button></div>
+          <div v-else class="training-recommendation-list">
+            <article v-for="(item, index) in trainingRecommendations" :key="`${item.exercise_type}-${index}`">
+              <span class="training-recommendation-index">{{ String(index + 1).padStart(2, '0') }}</span>
+              <div><strong>{{ item.title }}</strong><p>{{ item.reason }}</p><small>{{ item.source_label }} · 约 5～10 分钟</small></div>
+              <button class="secondary-button" type="button" @click="void startMicroTraining(item.exercise_type)">开始练习<ArrowRight :size="16" /></button>
+            </article>
+          </div>
+        </section>
+
+        <section v-if="currentUser" class="training-history" aria-labelledby="training-history-title">
+          <div class="training-section-heading"><div><p class="eyebrow">我的训练</p><h2 id="training-history-title">继续之前的思考</h2></div><button v-if="trainingRecordsError" class="text-button" type="button" @click="void loadTrainingRecords">重新加载</button></div>
+          <p v-if="isLoadingTrainingRecords && !trainingRecords.length" class="loading-state"><LoaderCircle :size="19" class="spin" />正在读取训练记录…</p>
+          <div v-else-if="trainingRecordsError && !trainingRecords.length" class="training-empty"><CircleAlert :size="24" /><div><strong>训练记录暂时无法加载</strong><p>{{ trainingRecordsError }}</p></div></div>
+          <div v-else-if="!trainingRecords.length" class="training-empty"><BookOpen :size="25" /><div><strong>还没有审题训练记录</strong><p>完成一次训练后，你可以回来继续修改自己的立意。</p></div></div>
+          <ol v-else class="training-record-list">
+            <li v-for="record in trainingRecords" :key="record.id">
+              <button type="button" @click="openTopicTrainingRecord(record)">
+                <span class="training-record-status" :class="`training-record-status--${record.status}`">{{ record.status === 'completed' ? '已完成' : record.status === 'failed' ? '可重试' : '进行中' }}</span>
+                <span><strong>{{ record.topic_prompt }}</strong><small>{{ new Date(record.updated_at).toLocaleDateString('zh-CN') }} · 已练习 {{ record.attempt_count }} 次</small></span>
+                <ChevronRight :size="18" />
+              </button>
+            </li>
+          </ol>
+        </section>
+        <section v-else class="training-signin-note"><div><strong>登录后保存训练过程</strong><p>你的审题、修改和反馈会保存在独立训练记录中，不会出现在正式作文历史里。</p></div><button class="secondary-button" type="button" @click="openAuthentication('login', { view: 'topic-training' })">登录并开始</button></section>
+      </section>
+
+      <section v-if="currentView === 'topic-training' && currentUser" class="topic-training-view page-container">
+        <header class="topic-training-heading">
+          <button class="text-button" type="button" :disabled="isSubmittingTopicTraining" @click="navigate('training')"><ArrowLeft :size="16" />返回写作训练</button>
+          <div><p class="eyebrow">审题与立意训练</p><h1>先想清楚，再动笔</h1><p>写下你自己的理解。反馈只帮助你检查方向，不会替你生成作文。</p></div>
+        </header>
+
+        <form v-if="!topicTrainingFeedback" id="topic-training-form" class="topic-training-form" @submit.prevent="submitTopicTraining">
+          <section class="training-prompt-field">
+            <label for="training-topic"><strong>作文题目或材料</strong><span>把完整题目和写作要求放在这里</span></label>
+            <textarea id="training-topic" v-model="topicPrompt" minlength="4" maxlength="2000" required :disabled="isSubmittingTopicTraining" placeholder="例如：请以“那一次，我真正长大了”为题，写一篇记叙文。"></textarea>
+            <details class="training-sample-topics"><summary>从示例题目开始</summary><div><button v-for="sample in topicTrainingSamples" :key="sample" type="button" :disabled="isSubmittingTopicTraining" @click="topicPrompt = sample">{{ sample }}</button></div></details>
+          </section>
+
+          <div class="topic-training-fields">
+            <label><span><strong>我抓到的关键词和要求</strong><small>必填</small></span><textarea v-model="topicRequirementNotes" minlength="2" maxlength="1000" required :disabled="isSubmittingTopicTraining" placeholder="例如：一次具体经历、写清变化过程、记叙文、突出“真正”长大"></textarea></label>
+            <label><span><strong>我准备表达的中心</strong><small>必填</small></span><textarea v-model="topicCentralIdea" minlength="4" maxlength="1000" required :disabled="isSubmittingTopicTraining" placeholder="用自己的话说清楚：我想通过这篇作文表达什么？"></textarea></label>
+            <label class="topic-outline-field"><span><strong>我的写作思路或提纲</strong><small>选填</small></span><textarea v-model="topicOutline" maxlength="2000" :disabled="isSubmittingTopicTraining" placeholder="简单列出开头、主要事件和结尾即可，不需要写得很完整。"></textarea></label>
+          </div>
+
+          <div class="topic-training-submit">
+            <div><strong>提交后会检查什么？</strong><p>题目限制、立意清晰度、偏题风险，以及提纲是否围绕中心。</p></div>
+            <button class="primary-button" type="submit" :disabled="!canSubmitTopicTraining"><LoaderCircle v-if="isSubmittingTopicTraining" :size="18" class="spin" /><CheckCircle2 v-else :size="18" />{{ isSubmittingTopicTraining ? '正在阅读你的思路' : topicTrainingId ? '再次检查我的思路' : '检查我的审题与立意' }}</button>
+          </div>
+          <p v-if="topicTrainingError" class="training-error" role="alert"><CircleAlert :size="17" />{{ topicTrainingError }} <button type="button" :disabled="isSubmittingTopicTraining" @click="void submitTopicTraining">重新尝试</button></p>
+        </form>
+
+        <section v-else id="topic-training-result" class="topic-training-result" aria-labelledby="topic-training-result-title">
+          <header><div><p class="eyebrow">训练反馈</p><h2 id="topic-training-result-title">你的写作方向已经更清楚了</h2><p>先看最值得调整的一点，再决定是否修改想法或开始写作。</p></div><span class="training-completed-mark"><Check :size="20" /></span></header>
+          <div class="training-result-statuses">
+            <article :class="`tone-${topicTrainingStatusTone(topicTrainingFeedback.topic_understanding)}`"><span>审题要求</span><strong>{{ topicTrainingStatusText('topic', topicTrainingFeedback.topic_understanding) }}</strong></article>
+            <article :class="`tone-${topicTrainingStatusTone(topicTrainingFeedback.idea_clarity)}`"><span>立意清晰度</span><strong>{{ topicTrainingStatusText('idea', topicTrainingFeedback.idea_clarity) }}</strong></article>
+            <article :class="`tone-${topicTrainingStatusTone(topicTrainingFeedback.off_topic_risk)}`"><span>偏题风险</span><strong>{{ topicTrainingStatusText('risk', topicTrainingFeedback.off_topic_risk) }}</strong></article>
+            <article :class="`tone-${topicTrainingStatusTone(topicTrainingFeedback.structure_status)}`"><span>结构思路</span><strong>{{ topicTrainingStatusText('structure', topicTrainingFeedback.structure_status) }}</strong></article>
+          </div>
+
+          <div class="training-result-main">
+            <article class="training-priority"><span>最值得先修改</span><h3>{{ topicTrainingFeedback.priority_issue }}</h3><ol><li v-for="(item, index) in topicTrainingFeedback.guidance" :key="item"><span>{{ index + 1 }}</span><p>{{ item }}</p></li></ol></article>
+            <div class="training-result-support">
+              <article v-if="topicTrainingFeedback.strengths.length"><h3>已经做得好的地方</h3><ul><li v-for="item in topicTrainingFeedback.strengths" :key="item"><CheckCircle2 :size="17" />{{ item }}</li></ul></article>
+              <article v-if="topicTrainingFeedback.missing_constraints.length"><h3>还需留意的题目要求</h3><ul><li v-for="item in topicTrainingFeedback.missing_constraints" :key="item"><CircleAlert :size="17" />{{ item }}</li></ul></article>
+              <article><h3>下一步</h3><p>{{ topicTrainingFeedback.next_step }}</p></article>
+            </div>
+          </div>
+
+          <footer class="training-result-actions">
+            <button class="secondary-button" type="button" @click="reviseTopicTraining"><Edit3 :size="17" />修改我的想法</button>
+            <button class="secondary-button" type="button" @click="openMaterialLibraryFromTopicTraining"><BookOpen :size="17" />看看相关素材</button>
+            <button class="primary-button" type="button" @click="startWritingFromTraining"><PenLine :size="17" />开始写这篇作文<ArrowRight :size="17" /></button>
+          </footer>
+        </section>
+      </section>
+
+      <section v-if="currentView === 'micro-training' && currentUser" class="micro-training-view page-container">
+        <header class="topic-training-heading">
+          <button class="text-button" type="button" :disabled="isSubmittingMicroTraining" @click="navigate('training')"><ArrowLeft :size="16" />返回写作训练</button>
+          <div><p class="eyebrow">专项微训练</p><h1>{{ microTrainingTask?.title || '练习一个具体能力' }}</h1><p>{{ microTrainingTask?.goal || '一次只练一个关键动作，完成后马上获得简短反馈。' }}</p></div>
+        </header>
+
+        <p v-if="isLoadingMicroTraining" class="loading-state"><LoaderCircle :size="20" class="spin" />正在准备练习…</p>
+        <div v-else-if="microTrainingError && !microTrainingTask" class="training-empty"><CircleAlert :size="24" /><div><strong>训练题暂时无法加载</strong><p>{{ microTrainingError }}</p></div><button class="secondary-button" type="button" @click="navigate('training')">返回选择其他练习</button></div>
+        <template v-else-if="microTrainingTask">
+          <form v-if="!microTrainingFeedback" class="micro-training-sheet" @submit.prevent="submitMicroTraining">
+            <section class="micro-training-prompt">
+              <div><span>{{ microExerciseLabel(microTrainingTask.exercise_type) }}</span><small>建议 {{ microTrainingTask.suggested_minutes }} 分钟</small></div>
+              <h2>{{ microTrainingTask.prompt }}</h2>
+              <p v-if="microTrainingTask.context">{{ microTrainingTask.context }}</p>
+              <aside><strong>本题目标</strong><p>{{ microTrainingTask.instruction }}</p></aside>
+            </section>
+            <label class="micro-training-answer" for="micro-training-answer"><span><strong>写下你的答案</strong><small>{{ microTrainingAnswer.trim().length }} / {{ microTrainingTask.max_characters }} 字</small></span><textarea id="micro-training-answer" v-model="microTrainingAnswer" :minlength="microTrainingTask.min_characters" :maxlength="microTrainingTask.max_characters" :placeholder="microTrainingTask.input_hint" :disabled="isSubmittingMicroTraining" required></textarea></label>
+            <footer>
+              <p>这不是正式作文评分，只检查本次练习是否达到目标。</p>
+              <button class="primary-button" type="submit" :disabled="!canSubmitMicroTraining"><LoaderCircle v-if="isSubmittingMicroTraining" :size="18" class="spin" /><CheckCircle2 v-else :size="18" />{{ isSubmittingMicroTraining ? '正在查看你的作答' : '提交并查看反馈' }}</button>
+            </footer>
+            <p v-if="microTrainingError" class="training-error" role="alert"><CircleAlert :size="17" />{{ microTrainingError }} <button type="button" :disabled="isSubmittingMicroTraining" @click="void submitMicroTraining">重新尝试</button></p>
+          </form>
+
+          <section v-else class="micro-training-result">
+            <header><div><p class="eyebrow">训练反馈</p><h2>{{ microTrainingFeedback.achievement === 'excellent' ? '完成得很好' : microTrainingFeedback.achievement === 'met' ? '本次训练已达标' : '再调整一步会更好' }}</h2><p>{{ microTrainingFeedback.next_step }}</p></div><span :class="`micro-achievement micro-achievement--${microTrainingFeedback.achievement}`">{{ microTrainingFeedback.achievement === 'excellent' ? '优秀' : microTrainingFeedback.achievement === 'met' ? '达标' : '还需练习' }}</span></header>
+            <div class="micro-training-feedback-grid">
+              <article><h3>做得好的地方</h3><ul><li v-for="item in microTrainingFeedback.strengths" :key="item"><CheckCircle2 :size="17" />{{ item }}</li></ul></article>
+              <article class="micro-feedback-priority"><h3>最需要改的一点</h3><p>{{ microTrainingFeedback.priority_issue }}</p></article>
+              <article><h3>可以这样调整</h3><ol><li v-for="(item, index) in microTrainingFeedback.suggestions" :key="item"><span>{{ index + 1 }}</span>{{ item }}</li></ol></article>
+            </div>
+            <footer class="training-result-actions"><button class="secondary-button" type="button" @click="retryMicroTraining"><RotateCcw :size="17" />修改后再练一次</button><button class="primary-button" type="button" @click="void startNewEssay('text')"><PenLine :size="17" />去作文中验证<ArrowRight :size="17" /></button></footer>
+          </section>
+        </template>
+      </section>
+
+      <section v-if="currentView === 'mock-exam' && currentUser" class="mock-exam-view page-container">
+        <header v-if="!mockExamIsRunning" class="topic-training-heading">
+          <button class="text-button" type="button" @click="navigate('training')"><ArrowLeft :size="16" />返回写作训练</button>
+          <div><p class="eyebrow">模拟考场</p><h1>安静完成一篇限时作文</h1><p>选择题目和时长后开始计时。写作内容会在本标签页内暂存，刷新或暂时离开不会丢失。</p></div>
+        </header>
+
+        <section v-if="!mockExamIsRunning" class="mock-exam-setup">
+          <div class="mock-exam-section">
+            <div class="mock-exam-section-title"><span>01</span><div><h2>选择作文题</h2><p>可以使用系统题目，也可以录入自己的考试题目。</p></div></div>
+            <div class="mock-topic-tabs"><button type="button" :class="{ active: mockExamTopicMode === 'system' }" @click="mockExamTopicMode = 'system'">系统题目</button><button type="button" :class="{ active: mockExamTopicMode === 'custom' }" @click="mockExamTopicMode = 'custom'">自定义题目</button></div>
+            <div v-if="mockExamTopicMode === 'system'" class="mock-topic-list"><button v-for="item in mockExamTopics" :key="item.title" type="button" :class="{ active: mockExamSelectedTopic === item.prompt }" @click="selectMockExamTopic(item.prompt)"><strong>{{ item.title }}</strong><span>{{ item.prompt }}</span></button></div>
+            <div v-else class="mock-custom-topic"><label>作文标题<input v-model="mockExamTitle" maxlength="120" placeholder="可以暂时不填" /></label><label>完整题目与要求<textarea v-model="mockExamCustomTopic" minlength="4" maxlength="2000" placeholder="粘贴或输入本次考试的作文题目"></textarea></label></div>
+          </div>
+          <div class="mock-exam-section">
+            <div class="mock-exam-section-title"><span>02</span><div><h2>选择考试时长</h2><p>开始后会显示真实倒计时，到时不会强制清空你的作文。</p></div></div>
+            <div class="mock-duration-options"><button v-for="minutes in [30, 45, 60]" :key="minutes" type="button" :class="{ active: mockExamDurationMinutes === minutes }" @click="mockExamDurationMinutes = minutes"><strong>{{ minutes }}</strong><span>分钟</span></button></div>
+          </div>
+          <footer class="mock-exam-start"><p>考试中不会出现写作提示；提交后将进入现有快速评测。</p><button class="primary-button" type="button" :disabled="!canStartMockExam" @click="startMockExam">开始计时<ArrowRight :size="17" /></button></footer>
+        </section>
+
+        <section v-else class="mock-exam-writing">
+          <header><button class="text-button" type="button" @click="navigate('training')"><ArrowLeft :size="16" />暂时离开</button><div class="mock-countdown" :class="{ expired: mockExamExpired }"><span>{{ mockExamExpired ? '时间已到' : '剩余时间' }}</span><strong>{{ mockExamTimeLabel }}</strong></div><button class="primary-button" type="button" @click="submitMockExamToEvaluation">提交并评测<ArrowRight :size="16" /></button></header>
+          <div class="mock-exam-topic"><span>本次题目</span><h1>{{ mockExamTitle || '自定义作文题' }}</h1><p>{{ activeMockExamTopic }}</p></div>
+          <label class="mock-exam-editor"><span><strong>作文正文</strong><small>{{ mockExamText.trim().length }} 字</small></span><textarea v-model="mockExamText" autofocus placeholder="从这里开始写作…"></textarea></label>
+          <p v-if="mockExamExpired" class="mock-exam-time-note">时间已到。你可以提交已经完成的内容，也可以补全最后一句后再提交。</p>
+          <p v-if="mockExamError" class="training-error" role="alert"><CircleAlert :size="17" />{{ mockExamError }}</p>
+        </section>
+      </section>
+
+      <section v-if="currentView === 'library'" class="library-view page-container">
+        <header class="library-heading">
+          <div>
+            <button v-if="materialReturnView" class="text-button library-back" type="button" @click="returnFromMaterialLibrary"><ArrowLeft :size="16" />返回刚才的学习</button>
+            <p class="eyebrow">素材库</p>
+            <h1>找到能真正写进作文的材料</h1>
+            <p>先理解事实，再把它和自己的观点连起来。这里不提供整篇范文，也不会替你拼凑作文。</p>
+          </div>
+          <button class="secondary-button" type="button" @click="startEssay('text')"><PenLine :size="17" />开始写作</button>
+        </header>
+
+        <section v-if="hasMaterialRecommendationContext || materialRecommendations.length" class="material-recommendations" aria-labelledby="material-recommendations-title">
+          <div class="material-section-heading">
+            <div><p class="eyebrow">为你推荐</p><h2 id="material-recommendations-title">{{ hasMaterialRecommendationContext ? '结合你现在的题目与思路' : '先从这些可靠素材开始' }}</h2><p>{{ hasMaterialRecommendationContext ? '推荐会说明它为什么适合当前写作；请只选择真正能服务自己观点的材料。' : '可以从一则事实清楚、使用边界明确的素材开始练习。' }}</p></div>
+            <button v-if="hasMaterialRecommendationContext" class="text-button" type="button" @click="clearMaterialRecommendationContext">查看全部推荐</button>
+          </div>
+          <p v-if="isLoadingMaterialRecommendations" class="library-loading"><LoaderCircle :size="18" class="spin" />正在整理相关素材</p>
+          <p v-else-if="materialRecommendationError" class="training-error" role="alert"><CircleAlert :size="17" />{{ materialRecommendationError }} <button type="button" @click="void loadMaterialRecommendations">重新尝试</button></p>
+          <div v-else class="material-recommendation-list">
+            <article v-for="item in materialRecommendations" :key="item.material.id">
+              <button class="material-recommendation-main" type="button" @click="selectMaterial(item.material)">
+                <span>{{ item.material.category }}</span><strong>{{ item.material.title }}</strong><p>{{ item.reason }}</p><small v-if="item.sources.length">依据：{{ item.sources.join('、') }}</small>
+              </button>
+              <button class="material-heart" type="button" :aria-label="item.material.is_favorited ? `取消收藏${item.material.title}` : `收藏${item.material.title}`" :disabled="pendingMaterialFavoriteId === item.material.id" @click="void toggleMaterialFavorite(item.material)"><Heart :size="18" :fill="item.material.is_favorited ? 'currentColor' : 'none'" /></button>
+            </article>
+            <p v-if="!materialRecommendations.length" class="library-empty">暂时没有匹配的推荐。你可以从下方浏览素材，再选择真正适合自己观点的一则。</p>
+          </div>
+        </section>
+
+        <section class="library-browser" aria-labelledby="library-browser-title">
+          <div class="material-section-heading"><div><p class="eyebrow">浏览素材</p><h2 id="library-browser-title">按主题慢慢挑选</h2></div><button v-if="currentUser" class="text-button" type="button" :class="{ active: materialsFavoritesOnly }" @click="materialsFavoritesOnly = !materialsFavoritesOnly; void loadMaterials()"><Heart :size="16" :fill="materialsFavoritesOnly ? 'currentColor' : 'none'" />{{ materialsFavoritesOnly ? '正在看收藏' : '我的收藏' }}</button></div>
+          <div class="library-filters">
+            <label class="library-search"><Search :size="18" /><input v-model="materialSearchQuery" type="search" maxlength="120" placeholder="搜索人物、主题或关键词" @keyup.enter="void loadMaterials" /><button v-if="materialSearchQuery" type="button" aria-label="清除搜索" @click="materialSearchQuery = ''; void loadMaterials()"><X :size="15" /></button></label>
+            <div class="material-category-filters" role="group" aria-label="素材分类"><button type="button" :class="{ active: !materialCategory }" @click="materialCategory = ''; void loadMaterials()">全部</button><button v-for="category in materialCategories" :key="category" type="button" :class="{ active: materialCategory === category }" @click="materialCategory = category; void loadMaterials()">{{ category }}</button></div>
+          </div>
+          <p v-if="materialError" class="training-error" role="alert"><CircleAlert :size="17" />{{ materialError }} <button type="button" @click="void loadMaterials">重新尝试</button></p>
+          <p v-else-if="isLoadingMaterials" class="library-loading"><LoaderCircle :size="18" class="spin" />正在加载素材</p>
+          <div v-else-if="materials.length" class="library-content">
+            <div class="material-list" role="list">
+              <article v-for="material in materials" :key="material.id" :class="{ active: selectedMaterial?.id === material.id }" role="listitem">
+                <button class="material-list-main" type="button" @click="selectMaterial(material)"><span>{{ material.category }}</span><strong>{{ material.title }}</strong><p>{{ material.background }}</p><small>{{ material.themes.slice(0, 3).join(' · ') }}</small></button>
+                <button class="material-heart" type="button" :aria-label="material.is_favorited ? `取消收藏${material.title}` : `收藏${material.title}`" :disabled="pendingMaterialFavoriteId === material.id" @click="void toggleMaterialFavorite(material)"><Heart :size="18" :fill="material.is_favorited ? 'currentColor' : 'none'" /></button>
+              </article>
+            </div>
+            <article v-if="selectedMaterial" ref="materialDetailRef" class="material-detail" aria-live="polite">
+              <header><div><span>{{ selectedMaterial.category }} · {{ selectedMaterial.source_kind }}</span><h2>{{ selectedMaterial.title }}</h2><p>{{ selectedMaterial.background }}</p></div><button class="material-heart" type="button" :aria-label="selectedMaterial.is_favorited ? `取消收藏${selectedMaterial.title}` : `收藏${selectedMaterial.title}`" :disabled="pendingMaterialFavoriteId === selectedMaterial.id" @click="void toggleMaterialFavorite(selectedMaterial)"><Heart :size="19" :fill="selectedMaterial.is_favorited ? 'currentColor' : 'none'" /></button></header>
+              <section><h3>核心事实</h3><ul><li v-for="fact in selectedMaterial.core_facts" :key="fact">{{ fact }}</li></ul></section>
+              <section><h3>可以证明什么</h3><ul class="material-claims"><li v-for="claim in selectedMaterial.supports_claims" :key="claim">{{ claim }}</li></ul></section>
+              <section class="material-guidance"><div><h3>适合怎样使用</h3><p>{{ selectedMaterial.how_to_use }}</p></div><div><h3>容易怎样用错</h3><p>{{ selectedMaterial.common_misuse }}</p></div></section>
+              <section><h3>简短示例用法</h3><p>{{ selectedMaterial.example_use }}</p></section>
+              <footer><CircleAlert :size="16" /><span>{{ selectedMaterial.fact_check_note }}</span></footer>
+            </article>
+          </div>
+          <div v-else class="library-empty"><BookOpen :size="26" /><div><strong>{{ materialsFavoritesOnly ? '还没有收藏素材' : '没有找到相关素材' }}</strong><p>{{ materialsFavoritesOnly ? '看到适合自己观点的材料时，可以点爱心收藏。' : '换个关键词或分类试试；素材应服务你的观点，而不是凑名人故事。' }}</p></div><button v-if="materialsFavoritesOnly" class="secondary-button" type="button" @click="materialsFavoritesOnly = false; void loadMaterials()">浏览全部素材</button></div>
         </section>
       </section>
 
@@ -2947,7 +3806,7 @@ onBeforeUnmount(() => {
             <li v-for="group in historyGroups" :key="group.rootId" class="version-group">
               <div class="version-group-heading"><div><strong>{{ group.latest.title || '未命名作文' }}</strong><span>{{ group.versions.length > 1 ? `已保留 ${group.versions.length} 个版本` : '当前只有初稿' }}</span></div><small>最新：{{ new Date(group.latest.created_at).toLocaleDateString('zh-CN') }}</small></div>
               <ol class="history-list archive-list version-archive-list">
-                <li v-for="item in group.versions" :key="item.id"><button type="button" @click="openHistoryEssay(item)"><span class="essay-file-icon"><FileText :size="21" /></span><span class="history-copy"><span class="archive-title-line"><strong>{{ item.title || '未命名作文' }}</strong><em>{{ revisionLabel(item.version_no) }}</em></span><span>{{ item.grade_level || '未设置年级' }} · {{ item.genre || '未设置文体' }}</span><small>评测于 {{ new Date(item.created_at).toLocaleDateString('zh-CN') }}</small></span><span class="history-score"><strong>{{ item.latest_score }}</strong><small>综合分</small></span><ChevronRight :size="19" /></button></li>
+                <li v-for="item in group.versions" :key="item.id"><button type="button" @click="openHistoryEssay(item)"><span class="essay-file-icon"><FileText :size="21" /></span><span class="history-copy"><span class="archive-title-line"><strong>{{ item.title || '未命名作文' }}</strong><em>{{ revisionLabel(item.version_no) }}</em><em v-if="item.origin_type === 'mock_exam'" class="mock-origin-badge">模拟考场</em></span><span>{{ item.grade_level || '未设置年级' }} · {{ item.genre || '未设置文体' }}</span><small>评测于 {{ new Date(item.created_at).toLocaleDateString('zh-CN') }}</small></span><span class="history-score"><strong>{{ item.latest_score }}</strong><small>综合分</small></span><ChevronRight :size="19" /></button></li>
               </ol>
             </li>
           </ol>
@@ -3208,7 +4067,7 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-if="reportSuggestions.length" class="priority-revision" aria-labelledby="priority-title">
-          <div class="report-section-heading"><div><p class="eyebrow">修改建议</p><h2 id="priority-title">本次最值得优先修改的问题</h2></div><span>按重要程度排序</span></div>
+          <div class="report-section-heading"><div><p class="eyebrow">修改建议</p><h2 id="priority-title">本次最值得优先修改的问题</h2></div><div class="report-heading-actions"><span>按重要程度排序</span><button class="text-button" type="button" @click="openMaterialLibraryFromReport"><BookOpen :size="16" />找可用素材</button></div></div>
           <article class="priority-action"><span>01</span><div><small>优先修改</small><h3>{{ reportSuggestions[0].suggestion }}</h3><p v-if="reportSuggestions[0].example_revision"><strong>可以这样试：</strong>{{ reportSuggestions[0].example_revision }}</p></div></article>
           <ol v-if="reportSuggestions.length > 1" class="supporting-suggestions"><li v-for="(suggestion, index) in reportSuggestions.slice(1, 3)" :key="suggestion.suggestion"><span>0{{ index + 2 }}</span><div><strong>{{ suggestion.suggestion }}</strong><p v-if="suggestion.example_revision">{{ suggestion.example_revision }}</p></div></li></ol>
         </section>
@@ -3263,9 +4122,9 @@ onBeforeUnmount(() => {
       </section>
       <div v-show="currentView === 'compose'" class="page-heading">
         <div>
-          <p class="eyebrow">{{ pendingRevision ? `修改版 · 第 ${pendingRevision.version} 版` : '新建评测' }}</p>
-          <h1>{{ pendingRevision ? '修改后，再看一次进步' : '提交一篇作文' }}</h1>
-          <p>{{ pendingRevision ? '修改文本已自动带入，完成再次评测后才会作为新版本保存。' : '手写稿可以拍照或从相册选择，电子稿可以直接输入或粘贴。' }}</p>
+          <p class="eyebrow">{{ pendingRevision ? `修改版 · 第 ${pendingRevision.version} 版` : submissionOrigin === 'mock_exam' ? '模拟考场作文' : '新建评测' }}</p>
+          <h1>{{ pendingRevision ? '修改后，再看一次进步' : submissionOrigin === 'mock_exam' ? '确认作文后开始评测' : '提交一篇作文' }}</h1>
+          <p>{{ pendingRevision ? '修改文本已自动带入，完成再次评测后才会作为新版本保存。' : submissionOrigin === 'mock_exam' ? '考试正文和题目已经带入。确认无误后，将进入现有快速评测。' : '手写稿可以拍照或从相册选择，电子稿可以直接输入或粘贴。' }}</p>
         </div>
         <div class="task-heading-actions">
           <button v-if="pendingRevision" class="text-button" type="button" :disabled="isBusy" @click="void returnToRevisionSource"><ArrowLeft :size="16" />返回上一版报告</button>
@@ -3277,7 +4136,7 @@ onBeforeUnmount(() => {
       <ol v-show="['compose', 'correction', 'review'].includes(currentView)" class="workflow-steps workflow-journey" aria-label="评测流程"><li v-for="(step, index) in workflowSteps" :key="step" :class="{ active: workflowStep === index + 1, done: workflowStep > index + 1 }"><span><Check v-if="workflowStep > index + 1" :size="13" /><template v-else>{{ index + 1 }}</template></span><strong>{{ step }}</strong></li></ol>
 
       <form v-show="currentView === 'compose'" class="submission-form" @submit.prevent="submitEssay">
-        <div v-if="!pendingRevision" class="submission-methods" role="group" aria-label="作文提交方式">
+        <div v-if="!pendingRevision && submissionOrigin !== 'mock_exam'" class="submission-methods" role="group" aria-label="作文提交方式">
           <button class="submission-method-primary" type="button" :class="{ active: submissionMode === 'image' }" @click="submissionMode = 'image'"><span class="submission-method-icon"><Camera :size="25" /></span><span><strong>手写作文</strong><small>拍照或从相册选择，支持多页作文</small></span><CircleCheck v-if="submissionMode === 'image'" :size="19" /></button>
           <button class="submission-method-secondary" type="button" :class="{ active: submissionMode === 'text' }" @click="submissionMode = 'text'"><Keyboard :size="18" /><span><strong>电子作文</strong><small>直接输入或粘贴文字</small></span></button>
         </div>
@@ -3285,6 +4144,14 @@ onBeforeUnmount(() => {
           <label for="essay-title">作文题目 <span>选填</span></label>
           <input id="essay-title" v-model="title" type="text" maxlength="255" :disabled="isBusy" />
         </div>
+
+        <aside v-if="prewritingContext && !pendingRevision" class="prewriting-context">
+          <div class="prewriting-context-heading"><span><BookOpen :size="18" /></span><div><strong>从审题训练开始写作</strong><p>题目要求已带入评测信息，你的立意和提纲只作为写作提醒，不会代替作文正文。</p></div></div>
+          <dl>
+            <div><dt>我的中心</dt><dd>{{ prewritingContext.centralIdea }}</dd></div>
+            <div v-if="prewritingContext.outline"><dt>我的提纲</dt><dd>{{ prewritingContext.outline }}</dd></div>
+          </dl>
+        </aside>
 
         <button class="details-toggle" type="button" :aria-expanded="showEssayDetails" @click="showEssayDetails = !showEssayDetails"><SlidersHorizontal :size="17" /><span><strong>评测信息</strong><small>年级、文体与写作要求</small></span><ChevronUp v-if="showEssayDetails" :size="18" /><ChevronDown v-else :size="18" /></button>
         <div v-if="showEssayDetails" class="essay-context-fields">
@@ -3618,8 +4485,9 @@ onBeforeUnmount(() => {
 
     <nav v-if="currentUser" class="mobile-bottom-nav" aria-label="快捷导航">
       <button type="button" :class="{ active: currentView === 'home' }" @click="navigate('home')"><Home :size="20" /><span>首页</span></button>
+      <button type="button" :class="{ active: ['training', 'topic-training', 'micro-training', 'mock-exam'].includes(currentView) }" @click="navigate('training')"><BookOpen :size="20" /><span>训练</span></button>
       <button type="button" :class="{ active: ['compose', 'correction', 'review', 'report'].includes(currentView) }" @click="startEssay('image')"><PenLine :size="20" /><span>作文评测</span></button>
-      <button type="button" :class="{ active: ['history', 'settings'].includes(currentView) }" @click="navigate('settings')"><UserRound :size="20" /><span>个人中心</span></button>
+      <button type="button" :class="{ active: currentView === 'settings' && settingsSection === 'growth' }" @click="settingsSection = 'growth'; navigate('settings')"><BarChart3 :size="20" /><span>成长</span></button>
     </nav>
   </div>
 </template>

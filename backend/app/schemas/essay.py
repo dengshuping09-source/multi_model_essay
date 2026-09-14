@@ -53,6 +53,7 @@ class EssaySubmissionResponse(BaseModel):
     grade_level: str | None
     genre: str | None
     writing_prompt: str | None
+    origin_type: Literal["standard", "mock_exam"] = "standard"
     full_score: int
     original_text: str | None
     status: EssayStatus
@@ -69,6 +70,7 @@ class EssayHistoryItemResponse(BaseModel):
     title: str | None
     grade_level: str | None
     genre: str | None
+    origin_type: Literal["standard", "mock_exam"] = "standard"
     status: EssayStatus
     created_at: datetime
     updated_at: datetime
