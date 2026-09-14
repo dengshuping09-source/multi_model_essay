@@ -20,6 +20,7 @@ def test_core_database_tables_are_registered() -> None:
         "image_quality_analyses",
         "model_reviews",
         "material_favorites",
+        "material_recent_views",
         "ocr_block_corrections",
         "ocr_blocks",
         "ocr_corrections",

@@ -120,6 +120,27 @@ def test_browse_search_filter_favorite_and_context_recommendations() -> None:
                 assert favorites.status_code == 200
                 assert [item["id"] for item in favorites.json()["items"]] == ["sima-qian-shiji"]
 
+                viewed_ids = [
+                    "tu-youyou-artemisinin",
+                    "sima-qian-shiji",
+                    "beidou-navigation",
+                    "dunhuang-conservation",
+                    "barrier-free-community",
+                ]
+                for material_id in viewed_ids:
+                    viewed = await client.put(f"/api/materials/{material_id}/recent-view")
+                    assert viewed.status_code == 200, viewed.text
+                    assert viewed.json()["material"]["id"] == material_id
+                recent = await client.get("/api/materials/recent")
+                assert recent.status_code == 200, recent.text
+                assert [item["material"]["id"] for item in recent.json()["items"]] == list(reversed(viewed_ids))
+                repeated = await client.put("/api/materials/sima-qian-shiji/recent-view")
+                assert repeated.status_code == 200
+                recent_after_repeat = await client.get("/api/materials/recent")
+                recent_ids = [item["material"]["id"] for item in recent_after_repeat.json()["items"]]
+                assert recent_ids[0] == "sima-qian-shiji"
+                assert len(recent_ids) == len(set(recent_ids)) == len(viewed_ids)
+
                 # Personalisation only starts after repeated, formal evaluation evidence.
                 async with get_session_factory()() as session:
                     for index in range(3):
@@ -171,6 +192,9 @@ def test_browse_search_filter_favorite_and_context_recommendations() -> None:
                 unfavorite = await client.delete("/api/materials/sima-qian-shiji/favorite")
                 assert unfavorite.status_code == 200
                 assert unfavorite.json()["is_favorited"] is False
+                cleared = await client.delete("/api/materials/recent")
+                assert cleared.status_code == 200
+                assert (await client.get("/api/materials/recent")).json()["items"] == []
         finally:
             await delete_test_user(user_id)
             await get_engine().dispose()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -55,3 +56,13 @@ class MaterialRecommendationResponse(BaseModel):
 class MaterialFavoriteResponse(BaseModel):
     material_id: str
     is_favorited: bool
+
+
+class MaterialRecentViewItem(BaseModel):
+    material: WritingMaterial
+    last_viewed_at: datetime
+
+
+class MaterialRecentViewListResponse(BaseModel):
+    items: list[MaterialRecentViewItem]
+    total: int

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UuidPrimaryKeyMixin
@@ -21,3 +22,20 @@ class MaterialFavorite(UuidPrimaryKeyMixin, TimestampMixin, Base):
     material_id: Mapped[str] = mapped_column(String(80), index=True)
 
     author: Mapped[Any] = relationship("User", back_populates="material_favorites")
+
+
+class MaterialRecentView(UuidPrimaryKeyMixin, Base):
+    """One durable, private last-viewed marker per student and material."""
+
+    __tablename__ = "material_recent_views"
+    __table_args__ = (UniqueConstraint("author_id", "material_id", name="material_recent_view_unique"),)
+
+    author_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    material_id: Mapped[str] = mapped_column(String(80), index=True)
+    last_viewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True
+    )
+
+    author: Mapped[Any] = relationship("User", back_populates="material_recent_views")

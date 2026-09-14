@@ -29,6 +29,9 @@ class User(UuidPrimaryKeyMixin, TimestampMixin, Base):
     material_favorites: Mapped[list[object]] = relationship(
         "MaterialFavorite", back_populates="author", cascade="all, delete-orphan"
     )
+    material_recent_views: Mapped[list[object]] = relationship(
+        "MaterialRecentView", back_populates="author", cascade="all, delete-orphan"
+    )
 
 
 class UserSession(UuidPrimaryKeyMixin, Base):

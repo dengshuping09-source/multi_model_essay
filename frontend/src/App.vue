@@ -285,6 +285,7 @@ interface MaterialRecommendation {
   reason: string
   sources: string[]
 }
+interface MaterialRecentView { material: WritingMaterial; last_viewed_at: string }
 interface MaterialRecommendationResponse {
   items: MaterialRecommendation[]
   personalized: boolean
@@ -295,7 +296,20 @@ interface TrainingRecommendation { exercise_type: MicroExerciseType; title: stri
 interface MicroTrainingTask { task_id: string; exercise_type: MicroExerciseType; title: string; goal: string; prompt: string; context: string | null; instruction: string; input_hint: string; suggested_minutes: number; min_characters: number; max_characters: number }
 interface MicroTrainingFeedback { achievement: 'excellent' | 'met' | 'needs_practice'; strengths: string[]; priority_issue: string; suggestions: string[]; recommend_retry: boolean; next_step: string }
 interface MicroTrainingResult { id: string; task: MicroTrainingTask; response_text: string; status: 'completed' | 'failed'; feedback: MicroTrainingFeedback | null; completed_at: string | null; created_at: string }
-interface MockExamSnapshot { userId: string; topic: string; title: string; durationMinutes: number; startedAt: number; endsAt: number; essayText: string }
+type MockExamMode = 'keyboard' | 'paper'
+type MockExamPhase = 'writing' | 'upload'
+interface MockExamSnapshot {
+  userId: string
+  topic: string
+  title: string
+  durationMinutes: number
+  startedAt: number
+  endsAt: number
+  essayText: string
+  mode?: MockExamMode
+  phase?: MockExamPhase
+  essayId?: string
+}
 interface PrewritingContext { topicPrompt: string; requirementNotes: string; centralIdea: string; outline: string }
 interface PendingRevisionMeta { parent_id: string; version: number; source_text: string; focus_items: string[] }
 interface EssayVersionSummary { id: string; root_essay_id: string; parent_essay_id: string | null; version_no: number; title: string | null; created_at: string; overall_score: number | null; dimension_scores: FinalEvaluationResult['dimension_scores']; summary: string | null; top_issue: string | null }
@@ -445,7 +459,8 @@ const materialRecommendations = ref<MaterialRecommendation[]>([])
 const materialSearchQuery = ref('')
 const materialCategory = ref<MaterialCategory | ''>('')
 const materialTheme = ref('')
-const materialsFavoritesOnly = ref(false)
+const materialLibraryScope = ref<'all' | 'favorites' | 'recent'>('all')
+const materialLastViewedAt = ref<Record<string, string>>({})
 const materialTopicContext = ref('')
 const materialIdeaContext = ref('')
 const materialIssueContext = ref('')
@@ -468,6 +483,9 @@ const mockExamSelectedTopic = ref(mockExamTopics[0].prompt)
 const mockExamCustomTopic = ref('')
 const mockExamTitle = ref(mockExamTopics[0].title)
 const mockExamDurationMinutes = ref(45)
+const mockExamMode = ref<MockExamMode>('keyboard')
+const mockExamPhase = ref<MockExamPhase>('writing')
+const mockExamEssayId = ref<string | null>(null)
 const mockExamStartedAt = ref<number | null>(null)
 const mockExamEndsAt = ref<number | null>(null)
 const mockExamText = ref('')
@@ -1363,6 +1381,7 @@ async function refreshReviewProgress(generation = reviewPollingGeneration): Prom
       isBatchReviewing.value = false
       if (successResult.value) successResult.value.status = 'evaluated'
       temporaryEssayId.value = null
+      if (submissionOrigin.value === 'mock_exam') clearMockExam()
       if (pendingRevision.value) {
         pendingRevision.value = null
         clearRevisionDraftStorage()
@@ -1821,12 +1840,25 @@ async function loadMaterials(): Promise<void> {
     if (materialSearchQuery.value.trim()) params.set('query', materialSearchQuery.value.trim())
     if (materialCategory.value) params.set('category', materialCategory.value)
     if (materialTheme.value) params.set('theme', materialTheme.value)
-    if (materialsFavoritesOnly.value) params.set('favorites_only', 'true')
+    if (materialLibraryScope.value === 'favorites') params.set('favorites_only', 'true')
     const suffix = params.size ? `?${params.toString()}` : ''
-    const response = await apiFetch(`${apiBaseUrl}/api/materials/${suffix}`)
-    const payload = await response.json().catch(() => ({})) as { items?: WritingMaterial[]; detail?: string }
+    const endpoint = materialLibraryScope.value === 'recent'
+      ? `${apiBaseUrl}/api/materials/recent`
+      : `${apiBaseUrl}/api/materials/${suffix}`
+    const response = await apiFetch(endpoint)
+    const payload = await response.json().catch(() => ({})) as {
+      items?: WritingMaterial[] | MaterialRecentView[]
+      detail?: string
+    }
     if (!response.ok) throw new Error(safeServerMessage(payload.detail, '素材暂时无法加载'))
-    materials.value = payload.items ?? []
+    if (materialLibraryScope.value === 'recent') {
+      const recentItems = (payload.items ?? []) as MaterialRecentView[]
+      materials.value = recentItems.map((item) => item.material)
+      materialLastViewedAt.value = Object.fromEntries(recentItems.map((item) => [item.material.id, item.last_viewed_at]))
+    } else {
+      materials.value = (payload.items ?? []) as WritingMaterial[]
+      materialLastViewedAt.value = {}
+    }
     if (!selectedMaterial.value || !materials.value.some((item) => item.id === selectedMaterial.value?.id)) {
       selectedMaterial.value = materials.value[0] ?? null
     } else {
@@ -1836,6 +1868,51 @@ async function loadMaterials(): Promise<void> {
     materialError.value = userFacingError(error, '素材暂时无法加载，请稍后重试。')
   } finally {
     isLoadingMaterials.value = false
+  }
+}
+
+function formatMaterialLastViewed(value: string | undefined): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const delta = Date.now() - date.getTime()
+  if (delta < 60_000) return '刚刚浏览'
+  if (delta < 3_600_000) return `${Math.max(1, Math.floor(delta / 60_000))} 分钟前浏览`
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前浏览`
+  return `${date.getMonth() + 1} 月 ${date.getDate()} 日浏览`
+}
+
+function switchMaterialLibraryScope(scope: 'all' | 'favorites' | 'recent'): void {
+  if (scope === 'recent' && !currentUser.value) {
+    materialError.value = '登录后会为你保留最近浏览的素材。'
+    return
+  }
+  materialLibraryScope.value = scope
+  void loadMaterials()
+}
+
+async function clearRecentMaterialViews(): Promise<void> {
+  if (!currentUser.value || !window.confirm('确定清空最近浏览的素材吗？此操作不会影响收藏。')) return
+  try {
+    const response = await apiFetch(`${apiBaseUrl}/api/materials/recent`, { method: 'DELETE' })
+    if (!response.ok) throw new Error('最近浏览暂时无法清空')
+    materials.value = []
+    materialLastViewedAt.value = {}
+    selectedMaterial.value = null
+  } catch (error) {
+    materialError.value = userFacingError(error, '最近浏览暂时无法清空，请稍后重试。')
+  }
+}
+
+async function recordMaterialView(material: WritingMaterial): Promise<void> {
+  if (!currentUser.value) return
+  try {
+    const response = await apiFetch(`${apiBaseUrl}/api/materials/${material.id}/recent-view`, { method: 'PUT' })
+    const payload = await response.json().catch(() => ({})) as MaterialRecentView & { detail?: string }
+    if (!response.ok) throw new Error(safeServerMessage(payload.detail, ''))
+    materialLastViewedAt.value = { ...materialLastViewedAt.value, [material.id]: payload.last_viewed_at }
+  } catch {
+    // Browsing remains available even when the private history marker cannot be saved.
   }
 }
 
@@ -1862,6 +1939,7 @@ async function loadMaterialRecommendations(): Promise<void> {
 
 function selectMaterial(material: WritingMaterial): void {
   selectedMaterial.value = material
+  void recordMaterialView(material)
   void nextTick(() => materialDetailRef.value?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }))
 }
 
@@ -1931,7 +2009,7 @@ async function toggleMaterialFavorite(material: WritingMaterial): Promise<void> 
     materials.value = materials.value.map(update)
     materialRecommendations.value = materialRecommendations.value.map((item) => ({ ...item, material: update(item.material) }))
     if (selectedMaterial.value?.id === material.id) selectedMaterial.value = update(selectedMaterial.value)
-    if (materialsFavoritesOnly.value && !payload.is_favorited) await loadMaterials()
+    if (materialLibraryScope.value === 'favorites' && !payload.is_favorited) await loadMaterials()
   } catch (error) {
     materialError.value = userFacingError(error, '收藏状态暂时无法更新，请稍后重试。')
   } finally {
@@ -2012,6 +2090,7 @@ function startMockExamTimer(): void {
     if (mockExamEndsAt.value !== null && mockExamNow.value >= mockExamEndsAt.value && mockExamTimer !== null) {
       clearInterval(mockExamTimer)
       mockExamTimer = null
+      if (mockExamMode.value === 'paper') mockExamPhase.value = 'upload'
       persistMockExam()
     }
   }, 1000)
@@ -2027,13 +2106,16 @@ function persistMockExam(): void {
     startedAt: mockExamStartedAt.value,
     endsAt: mockExamEndsAt.value,
     essayText: mockExamText.value,
+    mode: mockExamMode.value,
+    phase: mockExamPhase.value,
+    essayId: mockExamEssayId.value ?? undefined,
   }
-  sessionStorage.setItem(MOCK_EXAM_STORAGE_KEY, JSON.stringify(snapshot))
+  localStorage.setItem(MOCK_EXAM_STORAGE_KEY, JSON.stringify(snapshot))
 }
 
 function restoreMockExam(): void {
   if (!currentUser.value) return
-  const stored = sessionStorage.getItem(MOCK_EXAM_STORAGE_KEY)
+  const stored = localStorage.getItem(MOCK_EXAM_STORAGE_KEY) ?? sessionStorage.getItem(MOCK_EXAM_STORAGE_KEY)
   if (!stored) return
   try {
     const snapshot = JSON.parse(stored) as Partial<MockExamSnapshot>
@@ -2045,20 +2127,29 @@ function restoreMockExam(): void {
     mockExamStartedAt.value = snapshot.startedAt
     mockExamEndsAt.value = snapshot.endsAt
     mockExamText.value = snapshot.essayText ?? ''
+    mockExamMode.value = snapshot.mode === 'paper' ? 'paper' : 'keyboard'
+    mockExamPhase.value = snapshot.phase === 'upload' || (snapshot.mode === 'paper' && snapshot.endsAt <= Date.now()) ? 'upload' : 'writing'
+    mockExamEssayId.value = snapshot.essayId ?? null
     mockExamNow.value = Date.now()
-    startMockExamTimer()
+    if (!mockExamExpired.value && mockExamPhase.value === 'writing') startMockExamTimer()
+    if (mockExamEssayId.value) void restoreMockExamOcrTask(mockExamEssayId.value)
   } catch {
+    localStorage.removeItem(MOCK_EXAM_STORAGE_KEY)
     sessionStorage.removeItem(MOCK_EXAM_STORAGE_KEY)
   }
 }
 
 function clearMockExam(): void {
+  localStorage.removeItem(MOCK_EXAM_STORAGE_KEY)
   sessionStorage.removeItem(MOCK_EXAM_STORAGE_KEY)
   if (mockExamTimer !== null) clearInterval(mockExamTimer)
   mockExamTimer = null
   mockExamStartedAt.value = null
   mockExamEndsAt.value = null
   mockExamText.value = ''
+  mockExamMode.value = 'keyboard'
+  mockExamPhase.value = 'writing'
+  mockExamEssayId.value = null
   mockExamError.value = ''
 }
 
@@ -2083,6 +2174,8 @@ function startMockExam(): void {
   mockExamEndsAt.value = now + mockExamDurationMinutes.value * 60_000
   mockExamNow.value = now
   mockExamText.value = ''
+  mockExamPhase.value = 'writing'
+  mockExamEssayId.value = null
   mockExamError.value = ''
   persistMockExam()
   startMockExamTimer()
@@ -2103,6 +2196,22 @@ function submitMockExamToEvaluation(): void {
   title.value = examTitle
   writingPrompt.value = topic
   essayText.value = completedText
+  selectedReviewMode.value = 'quick'
+  showEssayDetails.value = true
+  setEssayStage('compose', true)
+}
+
+function submitPaperMockExam(): void {
+  if (!mockExamIsRunning.value || mockExamMode.value !== 'paper') return
+  const topic = activeMockExamTopic.value
+  const examTitle = mockExamTitle.value.trim()
+  mockExamPhase.value = 'upload'
+  persistMockExam()
+  newEssay()
+  submissionOrigin.value = 'mock_exam'
+  submissionMode.value = 'image'
+  title.value = examTitle
+  writingPrompt.value = topic
   selectedReviewMode.value = 'quick'
   showEssayDetails.value = true
   setEssayStage('compose', true)
@@ -2827,6 +2936,40 @@ async function openCorrection(reveal = isEssayWorkflowView(currentView.value)): 
   }
 }
 
+async function restoreMockExamOcrTask(essayId: string): Promise<void> {
+  try {
+    const response = await apiFetch(`${apiBaseUrl}/api/essays/${essayId}`)
+    const essay = (await response.json().catch(() => ({}))) as SubmissionResponse & { detail?: string }
+    if (!response.ok || essay.status === 'evaluated') {
+      if (essay.status === 'evaluated') clearMockExam()
+      return
+    }
+    successResult.value = essay
+    temporaryEssayId.value = essay.id
+    submissionOrigin.value = 'mock_exam'
+    submissionMode.value = 'image'
+    title.value = essay.title ?? ''
+    writingPrompt.value = essay.writing_prompt ?? ''
+    fullScore.value = essay.full_score
+    const runResponse = await apiFetch(`${apiBaseUrl}/api/essays/${essayId}/ocr?engine=baidu`)
+    const run = (await runResponse.json().catch(() => ({}))) as OcrRunResult & { detail?: string }
+    if (!runResponse.ok) return
+    ocrResult.value = run
+    ocrRuns.value = { baidu: run }
+    setEssayStage('correction', true)
+    if (run.status === 'running') {
+      isRecognizing.value = true
+      startOcrPolling(essayId, 'baidu')
+    } else if (run.status === 'completed') {
+      await openCorrection(true)
+    } else {
+      ocrErrorMessage.value = safeServerMessage(run.error_message, '这次文字识别暂未完成，请重新识别。')
+    }
+  } catch {
+    // The retained exam metadata remains available; ordinary retry still works.
+  }
+}
+
 async function saveCorrection(confirm: boolean): Promise<void> {
   if (!successResult.value || !correctionResult.value) return
   isSavingCorrection.value = true
@@ -3327,8 +3470,12 @@ async function submitEssay(): Promise<void> {
     }
     successResult.value = payload
     submissionOrigin.value = payload.origin_type ?? submissionOrigin.value
-    if (submissionOrigin.value === 'mock_exam') clearMockExam()
     temporaryEssayId.value = payload.id
+    if (submissionOrigin.value === 'mock_exam') {
+      mockExamEssayId.value = payload.id
+      mockExamPhase.value = 'upload'
+      persistMockExam()
+    }
     clearReviewResult()
     const imageSources = payload.sources.filter((source) => source.source_type === 'image_upload')
     if (submissionMode.value === 'text' && selectedImages.value.length) {
@@ -3592,8 +3739,8 @@ onBeforeUnmount(() => {
           </article>
           <article class="training-card">
             <div class="training-card-icon"><Edit3 :size="24" /></div>
-            <div class="training-card-copy"><span class="training-availability">{{ mockExamIsRunning ? '写作进行中' : '现在可用' }}</span><h2>模拟考场</h2><p>在安静、限时的环境里完成一篇作文，再进入现有正式评测。</p></div>
-            <button class="secondary-button" type="button" @click="openMockExam">{{ mockExamIsRunning ? '继续写作' : '进入考场' }}<ArrowRight :size="17" /></button>
+            <div class="training-card-copy"><span class="training-availability">{{ mockExamIsRunning ? (mockExamPhase === 'upload' ? '等待上传答卷' : '写作进行中') : '现在可用' }}</span><h2>模拟考场</h2><p>在安静、限时的环境里完成一篇作文，再进入现有正式评测。</p></div>
+            <button class="secondary-button" type="button" @click="openMockExam">{{ mockExamIsRunning ? (mockExamPhase === 'upload' ? '继续交卷' : '继续考试') : '进入考场' }}<ArrowRight :size="17" /></button>
           </article>
         </div>
 
@@ -3722,7 +3869,7 @@ onBeforeUnmount(() => {
       <section v-if="currentView === 'mock-exam' && currentUser" class="mock-exam-view page-container">
         <header v-if="!mockExamIsRunning" class="topic-training-heading">
           <button class="text-button" type="button" @click="navigate('training')"><ArrowLeft :size="16" />返回写作训练</button>
-          <div><p class="eyebrow">模拟考场</p><h1>安静完成一篇限时作文</h1><p>选择题目和时长后开始计时。写作内容会在本标签页内暂存，刷新或暂时离开不会丢失。</p></div>
+          <div><p class="eyebrow">模拟考场</p><h1>安静完成一篇限时作文</h1><p>选择题目和时长后开始计时。考试状态会在当前设备暂存，刷新或暂时离开后仍会按真实时间继续。</p></div>
         </header>
 
         <section v-if="!mockExamIsRunning" class="mock-exam-setup">
@@ -3736,14 +3883,18 @@ onBeforeUnmount(() => {
             <div class="mock-exam-section-title"><span>02</span><div><h2>选择考试时长</h2><p>开始后会显示真实倒计时，到时不会强制清空你的作文。</p></div></div>
             <div class="mock-duration-options"><button v-for="minutes in [30, 45, 60]" :key="minutes" type="button" :class="{ active: mockExamDurationMinutes === minutes }" @click="mockExamDurationMinutes = minutes"><strong>{{ minutes }}</strong><span>分钟</span></button></div>
           </div>
-          <footer class="mock-exam-start"><p>考试中不会出现写作提示；提交后将进入现有快速评测。</p><button class="primary-button" type="button" :disabled="!canStartMockExam" @click="startMockExam">开始计时<ArrowRight :size="17" /></button></footer>
+          <div class="mock-exam-section">
+            <div class="mock-exam-section-title"><span>03</span><div><h2>选择作答方式</h2><p>键盘模式直接在网页写作；纸笔模式在真实纸张上完成，交卷后拍照上传并校对文字。</p></div></div>
+            <div class="mock-topic-tabs mock-exam-mode-options"><button type="button" :class="{ active: mockExamMode === 'keyboard' }" @click="mockExamMode = 'keyboard'">键盘作答</button><button type="button" :class="{ active: mockExamMode === 'paper' }" @click="mockExamMode = 'paper'">纸笔作答</button></div>
+          </div>
+          <footer class="mock-exam-start"><p>{{ mockExamMode === 'paper' ? '考试中不会出现写作提示；时间结束或主动交卷后，再拍照上传答卷。' : '考试中不会出现写作提示；提交后将进入现有快速评测。' }}</p><button class="primary-button" type="button" :disabled="!canStartMockExam" @click="startMockExam">开始计时<ArrowRight :size="17" /></button></footer>
         </section>
 
         <section v-else class="mock-exam-writing">
-          <header><button class="text-button" type="button" @click="navigate('training')"><ArrowLeft :size="16" />暂时离开</button><div class="mock-countdown" :class="{ expired: mockExamExpired }"><span>{{ mockExamExpired ? '时间已到' : '剩余时间' }}</span><strong>{{ mockExamTimeLabel }}</strong></div><button class="primary-button" type="button" @click="submitMockExamToEvaluation">提交并评测<ArrowRight :size="16" /></button></header>
+          <header><button class="text-button" type="button" @click="navigate('training')"><ArrowLeft :size="16" />暂时离开</button><div class="mock-countdown" :class="{ expired: mockExamExpired || mockExamPhase === 'upload' }"><span>{{ mockExamPhase === 'upload' || mockExamExpired ? '时间已到' : '剩余时间' }}</span><strong>{{ mockExamTimeLabel }}</strong></div><button v-if="mockExamMode === 'keyboard'" class="primary-button" type="button" @click="submitMockExamToEvaluation">提交并评测<ArrowRight :size="16" /></button><button v-else-if="mockExamPhase === 'writing'" class="primary-button" type="button" @click="submitPaperMockExam">交卷并上传<ArrowRight :size="16" /></button><button v-else class="primary-button" type="button" @click="submitPaperMockExam">上传答卷<Camera :size="16" /></button></header>
           <div class="mock-exam-topic"><span>本次题目</span><h1>{{ mockExamTitle || '自定义作文题' }}</h1><p>{{ activeMockExamTopic }}</p></div>
-          <label class="mock-exam-editor"><span><strong>作文正文</strong><small>{{ mockExamText.trim().length }} 字</small></span><textarea v-model="mockExamText" autofocus placeholder="从这里开始写作…"></textarea></label>
-          <p v-if="mockExamExpired" class="mock-exam-time-note">时间已到。你可以提交已经完成的内容，也可以补全最后一句后再提交。</p>
+          <template v-if="mockExamMode === 'keyboard'"><label class="mock-exam-editor"><span><strong>作文正文</strong><small>{{ mockExamText.trim().length }} 字</small></span><textarea v-model="mockExamText" autofocus :disabled="mockExamExpired" placeholder="从这里开始写作…"></textarea></label><p v-if="mockExamExpired" class="mock-exam-time-note">时间已到，请提交已经完成的内容。</p></template>
+          <section v-else class="mock-paper-instructions"><template v-if="mockExamPhase === 'writing'"><strong>请在纸上完成作文</strong><p>考试期间不提供提示、素材或评分。完成后点击“交卷并上传”，使用拍照或相册上传一页或多页答卷。</p></template><template v-else><strong>现在上传答卷</strong><p>拍照上传后会进入原有的百度 OCR 和人工校对流程。上传、拍照和校对时间不计入本次写作时间。</p><button class="primary-button" type="button" @click="submitPaperMockExam"><Camera :size="17" />去上传答卷</button></template></section>
           <p v-if="mockExamError" class="training-error" role="alert"><CircleAlert :size="17" />{{ mockExamError }}</p>
         </section>
       </section>
@@ -3778,8 +3929,8 @@ onBeforeUnmount(() => {
         </section>
 
         <section class="library-browser" aria-labelledby="library-browser-title">
-          <div class="material-section-heading"><div><p class="eyebrow">浏览素材</p><h2 id="library-browser-title">按主题慢慢挑选</h2></div><button v-if="currentUser" class="text-button" type="button" :class="{ active: materialsFavoritesOnly }" @click="materialsFavoritesOnly = !materialsFavoritesOnly; void loadMaterials()"><Heart :size="16" :fill="materialsFavoritesOnly ? 'currentColor' : 'none'" />{{ materialsFavoritesOnly ? '正在看收藏' : '我的收藏' }}</button></div>
-          <div class="library-filters">
+          <div class="material-section-heading"><div><p class="eyebrow">浏览素材</p><h2 id="library-browser-title">按主题慢慢挑选</h2></div><div class="material-library-scopes" role="group" aria-label="素材范围"><button class="text-button" type="button" :class="{ active: materialLibraryScope === 'all' }" @click="switchMaterialLibraryScope('all')">全部素材</button><button v-if="currentUser" class="text-button" type="button" :class="{ active: materialLibraryScope === 'favorites' }" @click="switchMaterialLibraryScope('favorites')"><Heart :size="16" :fill="materialLibraryScope === 'favorites' ? 'currentColor' : 'none'" />我的收藏</button><button class="text-button" type="button" :class="{ active: materialLibraryScope === 'recent' }" @click="switchMaterialLibraryScope('recent')">最近浏览</button></div></div>
+          <div v-if="materialLibraryScope !== 'recent'" class="library-filters">
             <form class="library-search" role="search" @submit.prevent="void loadMaterials()"><Search :size="18" /><input v-model="materialSearchQuery" type="search" maxlength="120" placeholder="搜索人物、主题或关键词" /><button v-if="materialSearchQuery" type="button" aria-label="清除搜索" @click="materialSearchQuery = ''; void loadMaterials()"><X :size="15" /></button><button class="library-search-submit" type="submit">搜索</button></form>
             <div class="material-filter-row"><span>按类型</span><div class="material-category-filters" role="group" aria-label="素材分类"><button type="button" :class="{ active: !materialCategory }" @click="materialCategory = ''; void loadMaterials()">全部</button><button v-for="category in materialCategories" :key="category" type="button" :class="{ active: materialCategory === category }" @click="materialCategory = category; void loadMaterials()">{{ category }}</button></div></div>
             <div class="material-filter-row"><span>常用主题</span><div class="material-category-filters" role="group" aria-label="素材主题"><button type="button" :class="{ active: !materialTheme }" @click="materialTheme = ''; void loadMaterials()">不限</button><button v-for="theme in materialThemeOptions" :key="theme" type="button" :class="{ active: materialTheme === theme }" @click="materialTheme = theme; void loadMaterials()">{{ theme }}</button></div></div>
@@ -3789,7 +3940,7 @@ onBeforeUnmount(() => {
           <div v-else-if="materials.length" class="library-content">
             <div class="material-list" role="list">
               <article v-for="material in materials" :key="material.id" :class="{ active: selectedMaterial?.id === material.id }" role="listitem">
-                <button class="material-list-main" type="button" @click="selectMaterial(material)"><span>{{ material.category }}</span><strong>{{ material.title }}</strong><p>{{ material.background }}</p><small>{{ material.themes.slice(0, 3).join(' · ') }}</small></button>
+                <button class="material-list-main" type="button" @click="selectMaterial(material)"><span>{{ material.category }}</span><strong>{{ material.title }}</strong><p>{{ material.background }}</p><small>{{ material.themes.slice(0, 3).join(' · ') }}</small><em v-if="materialLibraryScope === 'recent'">{{ formatMaterialLastViewed(materialLastViewedAt[material.id]) }}</em></button>
                 <button class="material-heart" type="button" :aria-label="material.is_favorited ? `取消收藏${material.title}` : `收藏${material.title}`" :disabled="pendingMaterialFavoriteId === material.id" @click="void toggleMaterialFavorite(material)"><Heart :size="18" :fill="material.is_favorited ? 'currentColor' : 'none'" /></button>
               </article>
             </div>
@@ -3804,7 +3955,8 @@ onBeforeUnmount(() => {
               <footer><CircleAlert :size="16" /><span><strong>核实提醒：</strong>{{ selectedMaterial.fact_check_note }}</span></footer>
             </article>
           </div>
-          <div v-else class="library-empty"><BookOpen :size="26" /><div><strong>{{ materialsFavoritesOnly ? '还没有收藏素材' : '没有找到相关素材' }}</strong><p>{{ materialsFavoritesOnly ? '看到适合自己观点的材料时，可以点爱心收藏。' : '换个关键词或分类试试；素材应服务你的观点，而不是凑名人故事。' }}</p></div><button v-if="materialsFavoritesOnly" class="secondary-button" type="button" @click="materialsFavoritesOnly = false; void loadMaterials()">浏览全部素材</button></div>
+          <div v-else class="library-empty"><BookOpen :size="26" /><div><strong>{{ materialLibraryScope === 'favorites' ? '还没有收藏素材' : materialLibraryScope === 'recent' ? '还没有最近浏览的素材' : '没有找到相关素材' }}</strong><p>{{ materialLibraryScope === 'favorites' ? '看到适合自己观点的材料时，可以点爱心收藏。' : materialLibraryScope === 'recent' ? '打开一条素材详情后，它会出现在这里，方便你下次继续查看。' : '换个关键词或分类试试；素材应服务你的观点，而不是凑名人故事。' }}</p></div><button v-if="materialLibraryScope !== 'all'" class="secondary-button" type="button" @click="switchMaterialLibraryScope('all')">浏览全部素材</button></div>
+          <button v-if="materialLibraryScope === 'recent' && materials.length" class="text-button material-clear-recent" type="button" @click="void clearRecentMaterialViews()">清空最近浏览</button>
         </section>
       </section>
 
