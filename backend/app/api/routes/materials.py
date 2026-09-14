@@ -67,6 +67,7 @@ async def _recurring_issue_labels(session: AsyncSession, user_id: object | None)
 async def list_materials(
     query: str | None = Query(default=None, max_length=120),
     category: MaterialCategory | None = None,
+    theme: str | None = Query(default=None, max_length=30),
     favorites_only: bool = False,
     user: OptionalCurrentUser = None,
     session: AsyncSession = Depends(get_db_session),
@@ -74,7 +75,10 @@ async def list_materials(
     if favorites_only and user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录后可以查看收藏素材")
     favorite_ids = await _favorite_ids(session, user.id if user else None)
-    items = [_with_favorite(item, favorite_ids) for item in search_materials(query=query, category=category)]
+    items = [
+        _with_favorite(item, favorite_ids)
+        for item in search_materials(query=query, category=category, theme=theme)
+    ]
     if favorites_only:
         items = [item for item in items if item.is_favorited]
     return MaterialListResponse(items=items, total=len(items))

@@ -19,7 +19,15 @@ def _issue_focus(values: Iterable[str | None]) -> set[str]:
 
 
 def _theme_overlap(material: WritingMaterial, themes: set[str]) -> set[str]:
-    return set(material.themes).intersection(themes)
+    material_signals = detected_themes([*material.themes, *material.supports_claims])
+    return material_signals.intersection(themes)
+
+
+def _matching_claim(material: WritingMaterial, themes: set[str]) -> str | None:
+    return next(
+        (claim for claim in material.supports_claims if detected_themes([claim]).intersection(themes)),
+        None,
+    )
 
 
 def recommend_materials(
@@ -51,7 +59,11 @@ def recommend_materials(
             sources.append("题目")
         if matched_idea:
             score += 4 + len(matched_idea)
-            reasons.append(f"你的立意涉及“{sorted(matched_idea)[0]}”，可用它把观点落到具体行动上。")
+            matching_claim = _matching_claim(material, matched_idea)
+            if matching_claim:
+                reasons.append(f"你的立意可与“{matching_claim}”这一论证角度相连。")
+            else:
+                reasons.append(f"你的立意涉及“{sorted(matched_idea)[0]}”，可用它把观点落到具体行动上。")
             sources.append("立意")
         if current_focus:
             if current_focus.intersection({"论据展开", "细节描写"}):

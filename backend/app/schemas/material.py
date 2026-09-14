@@ -8,6 +8,14 @@ from pydantic import BaseModel, Field
 MaterialCategory = Literal["人物", "事件", "历史", "科技", "文化", "社会", "青春成长"]
 
 
+class MaterialReference(BaseModel):
+    """A curated, verifiable reading link. Links are never generated at request time."""
+
+    title: str = Field(min_length=1, max_length=160)
+    publisher: str = Field(min_length=1, max_length=80)
+    url: str = Field(pattern=r"^https://", max_length=500)
+
+
 class WritingMaterial(BaseModel):
     """A curated, compact source of evidence rather than a model-generated anecdote."""
 
@@ -23,6 +31,7 @@ class WritingMaterial(BaseModel):
     common_misuse: str
     example_use: str
     fact_check_note: str
+    reference_links: list[MaterialReference] = Field(default_factory=list, max_length=3)
     is_favorited: bool = False
 
 

@@ -263,6 +263,7 @@ interface TopicTrainingSession {
   updated_at: string
 }
 type MaterialCategory = '人物' | '事件' | '历史' | '科技' | '文化' | '社会' | '青春成长'
+interface MaterialReference { title: string; publisher: string; url: string }
 interface WritingMaterial {
   id: string
   title: string
@@ -276,6 +277,7 @@ interface WritingMaterial {
   common_misuse: string
   example_use: string
   fact_check_note: string
+  reference_links?: MaterialReference[]
   is_favorited: boolean
 }
 interface MaterialRecommendation {
@@ -317,7 +319,7 @@ interface ConfidenceFactor { factor: string; label: string; value: number; detai
 interface RecheckEvaluationSnapshot { id: string; version: number; overall_score: number | null; confidence: number | null; average_dimension_spread: number | null; dispute_count: number }
 interface FinalEvaluationResult { id?: string; version?: number; status?: string; overall_score: number | null; dimension_scores: Array<{ dimension: ReviewDimension['dimension']; score: number; max_score: number; spread?: number; provider_scores?: Record<string, number> }> | null; summary: string | null; confidence: number | null; consistency: string | null; disputes: Array<Record<string, unknown>> | null; learning_feedback?: LearningFeedback | null; deep_analysis?: DeepAnalysisResult | null; polish?: EssayPolishResult | null; aggregation_config?: { strategy?: string; dispute_spread?: number; calibration_min_samples?: number; calibration_sample_counts?: Record<string, number>; provider_weights?: Record<string, number> | null; evaluation_timing?: { quick_duration_ms?: number | null; depth_duration_ms?: number | null; total_duration_ms?: number | null }; confidence_factors?: { explanation?: ConfidenceFactor[]; average_dimension_spread?: number; completed_provider_count?: number; expected_provider_count?: number; excluded_provider_keys?: string[]; dispute_count?: number } } | null }
 interface ReviewRecheck { id: string; status: 'pending' | 'running' | 'completed' | 'skipped' | 'failed'; trigger_reason: string; result_summary: string | null; baseline_final_evaluation_id: string | null; recheck_batch_id: string | null; resolved_final_evaluation_id: string | null; started_at: string | null; completed_at: string | null; baseline_evaluation?: RecheckEvaluationSnapshot | null; resolved_evaluation?: RecheckEvaluationSnapshot | null }
-interface ReviewBatchResult { id: string; status: 'running' | 'completed' | 'failed'; review_mode?: 'quick' | 'deep'; requested_providers: string[]; reviews: ModelReviewResult[]; final_evaluation: FinalEvaluationResult | null; rechecks: ReviewRecheck[] }
+interface ReviewBatchResult { id: string; status: 'running' | 'completed' | 'failed'; review_mode?: 'quick' | 'deep'; text_source?: 'direct_input' | 'ocr_corrected'; requested_providers: string[]; reviews: ModelReviewResult[]; final_evaluation: FinalEvaluationResult | null; rechecks: ReviewRecheck[] }
 interface ReportTrustSummary { headline: string; explanation: string; tone: 'high' | 'medium' | 'low' | 'unknown' }
 interface ReportTrustSummaryInput { consistency?: string | null; disputes?: Array<Record<string, unknown>> | null; disputeDimensions: string[]; completed: number; expected: number; recheckStatus: ReviewRecheck['status'] | null }
 interface DimensionTrustDetail { dimension: ReviewDimension['dimension']; score: number; maxScore: number; spread: number | null; perspectiveCount: number; state: 'consensus' | 'disputed' | 'unknown'; perspectives: Array<{ label: string; score: number | null; maxScore: number | null; rationale: string; evidence: ReviewEvidence | null }> }
@@ -436,11 +438,13 @@ const evaluatedTrainingWorkCount = ref(0)
 const isLoadingRecommendations = ref(false)
 const recommendationError = ref('')
 const materialCategories: MaterialCategory[] = ['人物', '事件', '历史', '科技', '文化', '社会', '青春成长']
+const materialThemeOptions = ['坚持', '责任', '创新', '合作', '成长', '文化传承', '人与自然']
 const materials = ref<WritingMaterial[]>([])
 const selectedMaterial = ref<WritingMaterial | null>(null)
 const materialRecommendations = ref<MaterialRecommendation[]>([])
 const materialSearchQuery = ref('')
 const materialCategory = ref<MaterialCategory | ''>('')
+const materialTheme = ref('')
 const materialsFavoritesOnly = ref(false)
 const materialTopicContext = ref('')
 const materialIdeaContext = ref('')
@@ -795,13 +799,13 @@ const selectedReportAnnotation = computed(() =>
 )
 const annotatedEssaySegments = computed<AnnotatedTextSegment[]>(() => buildAnnotatedTextSegments(reportEssayText.value, reportAnnotations.value))
 const reportUsesOcrText = computed(() =>
-  successResult.value?.sources.some((source) => source.source_type === 'image_upload')
+  reviewBatch.value?.text_source === 'ocr_corrected'
+  || reviewBatch.value?.reviews.some((review) => review.text_source === 'ocr_corrected')
+  || successResult.value?.sources.some((source) => source.source_type === 'image_upload')
   || Boolean(ocrResult.value || correctionResult.value),
 )
 const displayedAnnotatedEssaySegments = computed<AnnotatedTextSegment[]>(() =>
-  reportUsesOcrText.value
-    ? joinOcrReadingLines(annotatedEssaySegments.value)
-    : annotatedEssaySegments.value,
+  formatEssayReadingLines(annotatedEssaySegments.value, reportUsesOcrText.value ? 'ocr_corrected' : 'direct_input'),
 )
 const reportStrengths = computed<LearningStrength[]>(() =>
   reviewBatch.value?.final_evaluation?.learning_feedback?.strengths ?? [],
@@ -1041,7 +1045,16 @@ function deduplicateReportAnnotations(annotations: ReviewAnnotationDetail[], tex
   return deduplicated
 }
 
-function joinOcrReadingLines(segments: AnnotatedTextSegment[]): AnnotatedTextSegment[] {
+/**
+ * The text used for evaluation is deliberately left untouched. OCR returns
+ * visual text rows, while the report needs paragraphs that can reflow with the
+ * reader width. This function changes only the rendered segments, so review
+ * offsets and OCR block mappings still point at the original saved text.
+ */
+function formatEssayReadingLines(
+  segments: AnnotatedTextSegment[],
+  textSource: 'direct_input' | 'ocr_corrected',
+): AnnotatedTextSegment[] {
   const units = segments.flatMap((segment) =>
     [...segment.text].map((character) => ({ character, annotations: segment.annotations })),
   )
@@ -1056,15 +1069,39 @@ function joinOcrReadingLines(segments: AnnotatedTextSegment[]): AnnotatedTextSeg
     else normalized.push({ text, annotations })
   }
 
+  const isLineBreak = (character: string | undefined): boolean => character === '\r' || character === '\n'
+  const lineBefore = (lineBreakStart: number): string => {
+    let lineStart = lineBreakStart
+    while (lineStart > 0 && !isLineBreak(units[lineStart - 1]?.character)) lineStart -= 1
+    return units.slice(lineStart, lineBreakStart).map((item) => item.character).join('')
+  }
+  const lineAfter = (lineBreakEnd: number): string => {
+    let lineEnd = lineBreakEnd
+    while (lineEnd < units.length && !isLineBreak(units[lineEnd]?.character)) lineEnd += 1
+    return units.slice(lineBreakEnd, lineEnd).map((item) => item.character).join('')
+  }
+  const hasParagraphMarker = (previousLine: string, nextLine: string): boolean => {
+    const trimmedPrevious = previousLine.trim()
+    const trimmedNext = nextLine.trim()
+    if (!trimmedPrevious || !trimmedNext) return true
+    if (/^[\s　]{2,}/.test(nextLine)) return true
+    if (/^(?:[（(]?[一二三四五六七八九十]+[、.)）]|\d+[、.)）]|[①②③④⑤⑥⑦⑧⑨⑩])/.test(trimmedNext)) return true
+    // A student normally uses a single newline after a completed sentence to
+    // start the next paragraph. For OCR it is more often a line wrap, so only
+    // retain this cue for direct input and pasted text.
+    return textSource === 'direct_input' && /[。！？!?；;：:][”’）】》〕]?$/.test(trimmedPrevious)
+  }
+
   let index = 0
   while (index < units.length) {
     const unit = units[index]!
-    if (unit.character !== '\r' && unit.character !== '\n') {
+    if (!isLineBreak(unit.character)) {
       append(unit.character, unit.annotations)
       index += 1
       continue
     }
 
+    const lineBreakStart = index
     let lineBreakCount = 0
     while (index < units.length) {
       const current = units[index]!.character
@@ -1078,6 +1115,12 @@ function joinOcrReadingLines(segments: AnnotatedTextSegment[]): AnnotatedTextSeg
       } else {
         break
       }
+
+      // A whitespace-only line is also a paragraph separator. Keep any
+      // indentation that belongs to the next paragraph in the source stream.
+      const whitespaceStart = index
+      while (units[index]?.character === ' ' || units[index]?.character === '\t') index += 1
+      if (!isLineBreak(units[index]?.character)) index = whitespaceStart
     }
 
     if (lineBreakCount >= 2) {
@@ -1085,9 +1128,20 @@ function joinOcrReadingLines(segments: AnnotatedTextSegment[]): AnnotatedTextSeg
       continue
     }
 
-    const previousCharacter = normalized.at(-1)?.text.at(-1) ?? ''
+    const previousLine = lineBefore(lineBreakStart)
+    const nextLine = lineAfter(index)
+    // Directly entered text normally uses one newline for an authored
+    // paragraph. OCR rows do not: unless a blank line, indent, or structural
+    // marker says otherwise, let the browser wrap those rows naturally.
+    if (hasParagraphMarker(previousLine, nextLine)) {
+      append('\n', [])
+      continue
+    }
+
+    const previousCharacter = previousLine.at(-1) ?? ''
     const nextCharacter = units[index]?.character ?? ''
     if (/[A-Za-z0-9]/.test(previousCharacter) && /[A-Za-z0-9]/.test(nextCharacter)) append(' ', [])
+
   }
 
   return normalized
@@ -1766,6 +1820,7 @@ async function loadMaterials(): Promise<void> {
     const params = new URLSearchParams()
     if (materialSearchQuery.value.trim()) params.set('query', materialSearchQuery.value.trim())
     if (materialCategory.value) params.set('category', materialCategory.value)
+    if (materialTheme.value) params.set('theme', materialTheme.value)
     if (materialsFavoritesOnly.value) params.set('favorites_only', 'true')
     const suffix = params.size ? `?${params.toString()}` : ''
     const response = await apiFetch(`${apiBaseUrl}/api/materials/${suffix}`)
@@ -3710,7 +3765,7 @@ onBeforeUnmount(() => {
             <button v-if="hasMaterialRecommendationContext" class="text-button" type="button" @click="clearMaterialRecommendationContext">查看全部推荐</button>
           </div>
           <p v-if="isLoadingMaterialRecommendations" class="library-loading"><LoaderCircle :size="18" class="spin" />正在整理相关素材</p>
-          <p v-else-if="materialRecommendationError" class="training-error" role="alert"><CircleAlert :size="17" />{{ materialRecommendationError }} <button type="button" @click="void loadMaterialRecommendations">重新尝试</button></p>
+          <p v-else-if="materialRecommendationError" class="training-error" role="alert"><CircleAlert :size="17" />{{ materialRecommendationError }} <button type="button" @click="void loadMaterialRecommendations()">重新尝试</button></p>
           <div v-else class="material-recommendation-list">
             <article v-for="item in materialRecommendations" :key="item.material.id">
               <button class="material-recommendation-main" type="button" @click="selectMaterial(item.material)">
@@ -3725,10 +3780,11 @@ onBeforeUnmount(() => {
         <section class="library-browser" aria-labelledby="library-browser-title">
           <div class="material-section-heading"><div><p class="eyebrow">浏览素材</p><h2 id="library-browser-title">按主题慢慢挑选</h2></div><button v-if="currentUser" class="text-button" type="button" :class="{ active: materialsFavoritesOnly }" @click="materialsFavoritesOnly = !materialsFavoritesOnly; void loadMaterials()"><Heart :size="16" :fill="materialsFavoritesOnly ? 'currentColor' : 'none'" />{{ materialsFavoritesOnly ? '正在看收藏' : '我的收藏' }}</button></div>
           <div class="library-filters">
-            <label class="library-search"><Search :size="18" /><input v-model="materialSearchQuery" type="search" maxlength="120" placeholder="搜索人物、主题或关键词" @keyup.enter="void loadMaterials" /><button v-if="materialSearchQuery" type="button" aria-label="清除搜索" @click="materialSearchQuery = ''; void loadMaterials()"><X :size="15" /></button></label>
-            <div class="material-category-filters" role="group" aria-label="素材分类"><button type="button" :class="{ active: !materialCategory }" @click="materialCategory = ''; void loadMaterials()">全部</button><button v-for="category in materialCategories" :key="category" type="button" :class="{ active: materialCategory === category }" @click="materialCategory = category; void loadMaterials()">{{ category }}</button></div>
+            <form class="library-search" role="search" @submit.prevent="void loadMaterials()"><Search :size="18" /><input v-model="materialSearchQuery" type="search" maxlength="120" placeholder="搜索人物、主题或关键词" /><button v-if="materialSearchQuery" type="button" aria-label="清除搜索" @click="materialSearchQuery = ''; void loadMaterials()"><X :size="15" /></button><button class="library-search-submit" type="submit">搜索</button></form>
+            <div class="material-filter-row"><span>按类型</span><div class="material-category-filters" role="group" aria-label="素材分类"><button type="button" :class="{ active: !materialCategory }" @click="materialCategory = ''; void loadMaterials()">全部</button><button v-for="category in materialCategories" :key="category" type="button" :class="{ active: materialCategory === category }" @click="materialCategory = category; void loadMaterials()">{{ category }}</button></div></div>
+            <div class="material-filter-row"><span>常用主题</span><div class="material-category-filters" role="group" aria-label="素材主题"><button type="button" :class="{ active: !materialTheme }" @click="materialTheme = ''; void loadMaterials()">不限</button><button v-for="theme in materialThemeOptions" :key="theme" type="button" :class="{ active: materialTheme === theme }" @click="materialTheme = theme; void loadMaterials()">{{ theme }}</button></div></div>
           </div>
-          <p v-if="materialError" class="training-error" role="alert"><CircleAlert :size="17" />{{ materialError }} <button type="button" @click="void loadMaterials">重新尝试</button></p>
+          <p v-if="materialError" class="training-error" role="alert"><CircleAlert :size="17" />{{ materialError }} <button type="button" @click="void loadMaterials()">重新尝试</button></p>
           <p v-else-if="isLoadingMaterials" class="library-loading"><LoaderCircle :size="18" class="spin" />正在加载素材</p>
           <div v-else-if="materials.length" class="library-content">
             <div class="material-list" role="list">
@@ -3739,11 +3795,13 @@ onBeforeUnmount(() => {
             </div>
             <article v-if="selectedMaterial" ref="materialDetailRef" class="material-detail" aria-live="polite">
               <header><div><span>{{ selectedMaterial.category }} · {{ selectedMaterial.source_kind }}</span><h2>{{ selectedMaterial.title }}</h2><p>{{ selectedMaterial.background }}</p></div><button class="material-heart" type="button" :aria-label="selectedMaterial.is_favorited ? `取消收藏${selectedMaterial.title}` : `收藏${selectedMaterial.title}`" :disabled="pendingMaterialFavoriteId === selectedMaterial.id" @click="void toggleMaterialFavorite(selectedMaterial)"><Heart :size="19" :fill="selectedMaterial.is_favorited ? 'currentColor' : 'none'" /></button></header>
+              <section class="material-theme-section"><h3>适用主题</h3><ul class="material-theme-list"><li v-for="theme in selectedMaterial.themes" :key="theme">{{ theme }}</li></ul></section>
               <section><h3>核心事实</h3><ul><li v-for="fact in selectedMaterial.core_facts" :key="fact">{{ fact }}</li></ul></section>
-              <section><h3>可以证明什么</h3><ul class="material-claims"><li v-for="claim in selectedMaterial.supports_claims" :key="claim">{{ claim }}</li></ul></section>
-              <section class="material-guidance"><div><h3>适合怎样使用</h3><p>{{ selectedMaterial.how_to_use }}</p></div><div><h3>容易怎样用错</h3><p>{{ selectedMaterial.common_misuse }}</p></div></section>
-              <section><h3>简短示例用法</h3><p>{{ selectedMaterial.example_use }}</p></section>
-              <footer><CircleAlert :size="16" /><span>{{ selectedMaterial.fact_check_note }}</span></footer>
+              <section><h3>适合论证什么</h3><ul><li v-for="claim in selectedMaterial.supports_claims" :key="claim">{{ claim }}</li></ul></section>
+              <section class="material-writing-example"><h3>写作转化示例</h3><dl><div><dt>素材事实</dt><dd>{{ selectedMaterial.core_facts[0] }}</dd></div><div><dt>论证角度</dt><dd>{{ selectedMaterial.supports_claims[0] }}</dd></div></dl><blockquote>{{ selectedMaterial.example_use }}</blockquote><p>示例用于学习表达思路，建议结合自己的文章重新组织。</p></section>
+              <section class="material-guidance"><div><h3>适合怎样使用</h3><p>{{ selectedMaterial.how_to_use }}</p></div><div><h3>使用提醒</h3><p>{{ selectedMaterial.common_misuse }}</p></div></section>
+              <section v-if="selectedMaterial.reference_links?.length" class="material-references"><h3>资料来源与延伸阅读</h3><ul><li v-for="reference in selectedMaterial.reference_links" :key="reference.url"><a :href="reference.url" target="_blank" rel="noopener noreferrer"><strong>{{ reference.title }}</strong><span>{{ reference.publisher }} · 打开资料</span></a></li></ul></section>
+              <footer><CircleAlert :size="16" /><span><strong>核实提醒：</strong>{{ selectedMaterial.fact_check_note }}</span></footer>
             </article>
           </div>
           <div v-else class="library-empty"><BookOpen :size="26" /><div><strong>{{ materialsFavoritesOnly ? '还没有收藏素材' : '没有找到相关素材' }}</strong><p>{{ materialsFavoritesOnly ? '看到适合自己观点的材料时，可以点爱心收藏。' : '换个关键词或分类试试；素材应服务你的观点，而不是凑名人故事。' }}</p></div><button v-if="materialsFavoritesOnly" class="secondary-button" type="button" @click="materialsFavoritesOnly = false; void loadMaterials()">浏览全部素材</button></div>

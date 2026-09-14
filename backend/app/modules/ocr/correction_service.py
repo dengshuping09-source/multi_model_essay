@@ -33,15 +33,58 @@ def _ordered_blocks(run: OcrRun) -> list[OcrBlock]:
     ]
 
 
+def _block_bounds(block: OcrBlock) -> tuple[float, float, float, float] | None:
+    if not block.polygon:
+        return None
+    try:
+        xs = [float(point[0]) for point in block.polygon]
+        ys = [float(point[1]) for point in block.polygon]
+    except (IndexError, TypeError, ValueError):
+        return None
+    if not xs or not ys:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _starts_new_paragraph(previous: OcrBlock, current: OcrBlock) -> bool:
+    """Infer paragraph boundaries from OCR line geometry, not every OCR row."""
+    previous_bounds = _block_bounds(previous)
+    current_bounds = _block_bounds(current)
+    if previous_bounds is None or current_bounds is None:
+        return False
+
+    previous_left, previous_top, _, previous_bottom = previous_bounds
+    current_left, current_top, _, current_bottom = current_bounds
+    previous_height = max(1.0, previous_bottom - previous_top)
+    current_height = max(1.0, current_bottom - current_top)
+    reference_height = max(previous_height, current_height)
+
+    # A first-line indent of roughly one character, or an empty-line-sized
+    # vertical gap, is meaningful paragraph information. Ordinary line spacing
+    # deliberately remains a soft visual row break.
+    has_indent = current_left - previous_left >= reference_height * 0.8
+    vertical_gap = current_top - previous_bottom
+    has_large_vertical_gap = vertical_gap >= reference_height * 1.15
+    return has_indent or has_large_vertical_gap
+
+
 def compose_corrected_text(
     run: OcrRun, corrected_by_block_id: dict[UUID, str]
 ) -> str | None:
     page_texts: list[str] = []
     for page in sorted(run.pages, key=lambda item: item.page_number):
         blocks = sorted(page.blocks, key=lambda item: item.block_index)
-        text = "\n".join(
-            corrected_by_block_id.get(block.id, block.text) for block in blocks
-        )
+        parts: list[str] = []
+        previous_block: OcrBlock | None = None
+        for block in blocks:
+            block_text = corrected_by_block_id.get(block.id, block.text)
+            if not block_text.strip():
+                continue
+            if previous_block is not None:
+                parts.append("\n\n" if _starts_new_paragraph(previous_block, block) else "\n")
+            parts.append(block_text)
+            previous_block = block
+        text = "".join(parts)
         if text:
             page_texts.append(text)
     return "\n\n".join(page_texts) or None

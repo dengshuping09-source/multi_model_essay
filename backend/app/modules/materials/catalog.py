@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from app.schemas.material import MaterialCategory, WritingMaterial
+from app.schemas.material import MaterialCategory, MaterialReference, WritingMaterial
 
 
 def _material(
@@ -18,6 +18,7 @@ def _material(
     common_misuse: str,
     example_use: str,
     note: str,
+    references: list[MaterialReference] | None = None,
 ) -> WritingMaterial:
     return WritingMaterial(
         id=material_id,
@@ -32,6 +33,7 @@ def _material(
         common_misuse=common_misuse,
         example_use=example_use,
         fact_check_note=note,
+        reference_links=references or [],
     )
 
 
@@ -52,6 +54,13 @@ MATERIALS: tuple[WritingMaterial, ...] = (
         "不要只写“他很伟大、很坚持”，也不要补写未经核实的心理活动或名言。",
         "当写“真正的坚持需要目标感”时，可用他长期整理史料、完成著作来说明坚持并非一时冲动。",
         "涉及具体年代、经历细节时，请在写作前自行核对可靠资料。",
+        [
+            MaterialReference(
+                title="《史记》：中华民族的文化瑰宝",
+                publisher="全国哲学社会科学工作办公室",
+                url="https://www.nopss.gov.cn/n1/2024/0221/c458483-40180418.html",
+            )
+        ],
     ),
     _material(
         "tu-youyou-artemisinin",
@@ -60,12 +69,19 @@ MATERIALS: tuple[WritingMaterial, ...] = (
         "公共事实",
         "屠呦呦参与抗疟药物研究，团队从传统医药文献中获得启发，并通过反复实验推进研究。",
         ["青蒿素的发现与疟疾治疗有关。", "研究过程结合了文献线索、实验验证与团队协作。"],
-        ["创新", "求真", "坚持", "阅读积累", "合作"],
+        ["坚持", "科研精神", "实践探索", "责任担当", "合作"],
         ["创新需要尊重已有知识，也需要实验验证。", "解决问题离不开耐心求证。"],
         "把“从资料中找到线索”和“用实验反复验证”连成因果，说明创新不是凭空想象。",
         "不要把科研写成单人灵光一现，也不要编造具体实验次数或名言。",
         "论证“创新离不开扎实求证”时，可写研究从文献启发出发，再经实验验证的过程。",
         "不使用精确年份、药效数字或引语；若需要，请查阅权威科研机构资料。",
+        [
+            MaterialReference(
+                title="Tu Youyou – Biographical",
+                publisher="诺贝尔奖官方网站",
+                url="https://www.nobelprize.org/prizes/medicine/2015/tu/biographical/",
+            )
+        ],
     ),
     _material(
         "beidou-navigation",
@@ -80,6 +96,13 @@ MATERIALS: tuple[WritingMaterial, ...] = (
         "不要罗列专业参数，也不要把技术名称当成万能论据。",
         "写“科技应服务生活”时，可从导航、交通或救援等具体使用场景切入。",
         "技术参数更新较快；本条只提供稳定的公共事实和写作方向。",
+        [
+            MaterialReference(
+                title="北斗卫星导航系统",
+                publisher="中国卫星导航系统管理办公室",
+                url="https://www.beidou.gov.cn/",
+            )
+        ],
     ),
     _material(
         "dunhuang-conservation",
@@ -94,6 +117,13 @@ MATERIALS: tuple[WritingMaterial, ...] = (
         "不要把文物保护简单说成“修旧如新”，也不要虚构洞窟、壁画的具体细节。",
         "写“传统文化需要当代守护”时，可将长期保护与数字化传播并列，形成更完整的论证。",
         "如果引用具体洞窟、作品或保护技术，请另行核对博物馆、研究机构资料。",
+        [
+            MaterialReference(
+                title="敦煌研究院文物数字化研究所",
+                publisher="敦煌研究院",
+                url="https://www.dha.ac.cn/info/1194/2351.htm",
+            )
+        ],
     ),
     _material(
         "dujiangyan-water-project",
@@ -108,6 +138,13 @@ MATERIALS: tuple[WritingMaterial, ...] = (
         "不要把古代工程神化成无所不能，也不要堆砌术语。",
         "讨论“智慧来自实践”时，可用因地制宜的工程思路说明观察与方案之间的关系。",
         "工程细节和具体年代请以权威水利、文化遗产资料为准。",
+        [
+            MaterialReference(
+                title="青城山—都江堰（世界遗产）",
+                publisher="联合国教科文组织世界遗产中心",
+                url="https://whc.unesco.org/en/list/1001/",
+            )
+        ],
     ),
     _material(
         "flood-relief-cooperation",
@@ -122,6 +159,13 @@ MATERIALS: tuple[WritingMaterial, ...] = (
         "不要借真实灾害编造感人细节，也不要夸大个人作用。",
         "论证“合作让困难被看见并被解决”时，可写不同角色如何衔接信息、物资与行动。",
         "本条不对应某一次具体灾害；若写真实事件，请查证时间、地点和人物。",
+        [
+            MaterialReference(
+                title="应急抢险救灾物资保障体系和能力建设指导意见",
+                publisher="中华人民共和国应急管理部",
+                url="https://www.mem.gov.cn/gk/zfxxgkpt/fdzdgknr/202410/t20241023_506225.shtml",
+            )
+        ],
     ),
     _material(
         "barrier-free-community",
@@ -136,6 +180,13 @@ MATERIALS: tuple[WritingMaterial, ...] = (
         "不要替行动不便者想象夸张感受，也不要把帮助写成居高临下的施舍。",
         "写“善意要落到细节”时，可以从坡道、标识或通道是否方便使用来展开。",
         "这是可在身边观察和核实的生活素材，不对应某个特定社区项目。",
+        [
+            MaterialReference(
+                title="中华人民共和国无障碍环境建设法",
+                publisher="中华人民共和国工业和信息化部",
+                url="https://gxca.miit.gov.cn/zwgk/zcwj/flfg/art/2024/art_340a68cb6a8e45ae81c121630dd37346.html",
+            )
+        ],
     ),
     _material(
         "campus-book-corner",
@@ -164,6 +215,13 @@ MATERIALS: tuple[WritingMaterial, ...] = (
         "不要编造候鸟数量、物种名称或保护成果。",
         "讨论“责任需要长期坚持”时，可用湿地保护需要持续管理来支撑观点。",
         "如需使用具体湿地或物种，请在写作前查阅当地自然保护机构资料。",
+        [
+            MaterialReference(
+                title="中华人民共和国湿地保护法",
+                publisher="中华人民共和国生态环境部",
+                url="https://www.mee.gov.cn/ywgz/fgbz/fl/202112/t20211227_965347.shtml",
+            )
+        ],
     ),
 )
 
@@ -190,12 +248,18 @@ def find_material(material_id: str) -> WritingMaterial | None:
 
 
 def search_materials(
-    *, query: str | None = None, category: MaterialCategory | None = None
+    *,
+    query: str | None = None,
+    category: MaterialCategory | None = None,
+    theme: str | None = None,
 ) -> list[WritingMaterial]:
     normalized_query = (query or "").strip().lower()
+    normalized_theme = (theme or "").strip().lower()
     results: list[WritingMaterial] = []
     for item in MATERIALS:
         if category is not None and item.category != category:
+            continue
+        if normalized_theme and not any(normalized_theme == value.lower() for value in item.themes):
             continue
         searchable = " ".join(
             [
@@ -205,6 +269,9 @@ def search_materials(
                 *item.core_facts,
                 *item.themes,
                 *item.supports_claims,
+                item.how_to_use,
+                item.common_misuse,
+                item.example_use,
             ]
         ).lower()
         if normalized_query and normalized_query not in searchable:
