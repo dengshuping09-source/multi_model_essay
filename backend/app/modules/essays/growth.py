@@ -281,6 +281,48 @@ def build_growth_summary(
         improved_dimension_counts.most_common(1)[0] if improved_dimension_counts else (None, 0)
     )
 
+    recent_revision = None
+    if comparisons:
+        revision_essay, comparison = comparisons[-1]
+        revision_record = by_id.get(revision_essay.id)
+        revision_final = revision_record[1] if revision_record is not None else None
+        evaluated_at = (
+            getattr(revision_final, "created_at", None)
+            if revision_final is not None
+            else getattr(revision_essay, "created_at", None)
+        )
+        if isinstance(evaluated_at, datetime):
+            persistent_issues: list[dict[str, Any]] = []
+            for change in comparison["persistent_issues"]:
+                issue = change.get("current") or change.get("previous")
+                if not isinstance(issue, dict):
+                    continue
+                identity = _issue_identity(issue)
+                persistent_issues.append(
+                    {
+                        "category": identity[0],
+                        "issue_type": identity[1],
+                        "label": identity[2],
+                        "statement": str(issue.get("statement") or ""),
+                        "explanation": change["explanation"],
+                    }
+                )
+            recent_revision = {
+                "root_essay_id": comparison["root_essay_id"],
+                "previous_essay_id": comparison["previous_essay_id"],
+                "current_essay_id": comparison["current_essay_id"],
+                "title": revision_essay.title,
+                "evaluated_at": evaluated_at,
+                "previous_version_no": comparison["previous_version_no"],
+                "current_version_no": comparison["current_version_no"],
+                "previous_score": comparison["previous_score"],
+                "current_score": comparison["current_score"],
+                "score_change": comparison["score_change"],
+                "outcome": comparison["outcome"],
+                "dimension_changes": comparison["dimension_changes"],
+                "persistent_issues": persistent_issues[:3],
+            }
+
     latest = None
     if ordered:
         latest_essay, latest_final = ordered[-1]
@@ -315,4 +357,5 @@ def build_growth_summary(
             "most_improved_dimension": most_improved_dimension,
             "most_improved_dimension_count": most_improved_dimension_count,
         },
+        "recent_revision": recent_revision,
     }

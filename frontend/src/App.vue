@@ -233,7 +233,10 @@ interface GrowthDimensionTrend { dimension: ReviewDimension['dimension']; direct
 interface GrowthOverallTrend { direction: 'improving' | 'steady' | 'declining' | 'insufficient'; change: number | null; recent_change: number | null; points: GrowthDimensionPoint[] }
 interface GrowthIssuePattern { category: string; issue_type: string | null; label: string; work_count: number; occurrence_count: number; latest_statement: string }
 interface GrowthImprovedIssue { essay_id: string; title: string | null; previous_version_no: number; current_version_no: number; category: string; issue_type: string | null; label: string; statement: string; explanation: string; evaluated_at: string }
-interface GrowthSummary { evaluation_count: number; work_count: number; has_long_term_insights: boolean; additional_works_needed: number; latest: { essay_id: string; title: string | null; evaluated_at: string; overall_score: number | null; dimension_scores: Array<{ dimension: ReviewDimension['dimension']; score: number; max_score: number }> } | null; recent_improvement_dimension: ReviewDimension['dimension'] | null; practice_dimension: ReviewDimension['dimension'] | null; practice_issue: GrowthIssuePattern | null; overall_trend?: GrowthOverallTrend; dimension_trends: GrowthDimensionTrend[]; recurring_issues: GrowthIssuePattern[]; improved_issues: GrowthImprovedIssue[]; revision_summary: { comparison_count: number; improved_count: number; steady_count: number; declined_count: number; most_improved_dimension: ReviewDimension['dimension'] | null; most_improved_dimension_count: number } }
+interface GrowthRevisionDimensionChange { dimension: ReviewDimension['dimension']; before: number; after: number; change: number }
+interface GrowthRevisionIssue { category: string; issue_type: string | null; label: string; statement: string; explanation: string }
+interface GrowthRecentRevision { root_essay_id: string; previous_essay_id: string; current_essay_id: string; title: string | null; evaluated_at: string; previous_version_no: number; current_version_no: number; previous_score: number | null; current_score: number | null; score_change: number | null; outcome: 'improved' | 'steady' | 'declined' | 'unavailable'; dimension_changes: GrowthRevisionDimensionChange[]; persistent_issues: GrowthRevisionIssue[] }
+interface GrowthSummary { evaluation_count: number; work_count: number; has_long_term_insights: boolean; additional_works_needed: number; latest: { essay_id: string; title: string | null; evaluated_at: string; overall_score: number | null; dimension_scores: Array<{ dimension: ReviewDimension['dimension']; score: number; max_score: number }> } | null; recent_improvement_dimension: ReviewDimension['dimension'] | null; practice_dimension: ReviewDimension['dimension'] | null; practice_issue: GrowthIssuePattern | null; overall_trend?: GrowthOverallTrend; dimension_trends: GrowthDimensionTrend[]; recurring_issues: GrowthIssuePattern[]; improved_issues: GrowthImprovedIssue[]; revision_summary: { comparison_count: number; improved_count: number; steady_count: number; declined_count: number; most_improved_dimension: ReviewDimension['dimension'] | null; most_improved_dimension_count: number }; recent_revision?: GrowthRecentRevision | null }
 interface TopicTrainingFeedback {
   topic_understanding: 'accurate' | 'mostly_accurate' | 'needs_revision'
   idea_clarity: 'clear' | 'developing' | 'unclear'
@@ -312,7 +315,7 @@ interface AnnotatedTextSegment { text: string; annotations: ReviewAnnotationDeta
 interface PolishTextSegment { text: string; changed: boolean; changeIndex: number | null }
 interface ConfidenceFactor { factor: string; label: string; value: number; detail: string }
 interface RecheckEvaluationSnapshot { id: string; version: number; overall_score: number | null; confidence: number | null; average_dimension_spread: number | null; dispute_count: number }
-interface FinalEvaluationResult { version?: number; status?: string; overall_score: number | null; dimension_scores: Array<{ dimension: ReviewDimension['dimension']; score: number; max_score: number; spread?: number; provider_scores?: Record<string, number> }> | null; summary: string | null; confidence: number | null; consistency: string | null; disputes: Array<Record<string, unknown>> | null; learning_feedback?: LearningFeedback | null; deep_analysis?: DeepAnalysisResult | null; polish?: EssayPolishResult | null; aggregation_config?: { strategy?: string; dispute_spread?: number; calibration_min_samples?: number; calibration_sample_counts?: Record<string, number>; provider_weights?: Record<string, number> | null; evaluation_timing?: { quick_duration_ms?: number | null; depth_duration_ms?: number | null; total_duration_ms?: number | null }; confidence_factors?: { explanation?: ConfidenceFactor[]; average_dimension_spread?: number; completed_provider_count?: number; expected_provider_count?: number; excluded_provider_keys?: string[]; dispute_count?: number } } | null }
+interface FinalEvaluationResult { id?: string; version?: number; status?: string; overall_score: number | null; dimension_scores: Array<{ dimension: ReviewDimension['dimension']; score: number; max_score: number; spread?: number; provider_scores?: Record<string, number> }> | null; summary: string | null; confidence: number | null; consistency: string | null; disputes: Array<Record<string, unknown>> | null; learning_feedback?: LearningFeedback | null; deep_analysis?: DeepAnalysisResult | null; polish?: EssayPolishResult | null; aggregation_config?: { strategy?: string; dispute_spread?: number; calibration_min_samples?: number; calibration_sample_counts?: Record<string, number>; provider_weights?: Record<string, number> | null; evaluation_timing?: { quick_duration_ms?: number | null; depth_duration_ms?: number | null; total_duration_ms?: number | null }; confidence_factors?: { explanation?: ConfidenceFactor[]; average_dimension_spread?: number; completed_provider_count?: number; expected_provider_count?: number; excluded_provider_keys?: string[]; dispute_count?: number } } | null }
 interface ReviewRecheck { id: string; status: 'pending' | 'running' | 'completed' | 'skipped' | 'failed'; trigger_reason: string; result_summary: string | null; baseline_final_evaluation_id: string | null; recheck_batch_id: string | null; resolved_final_evaluation_id: string | null; started_at: string | null; completed_at: string | null; baseline_evaluation?: RecheckEvaluationSnapshot | null; resolved_evaluation?: RecheckEvaluationSnapshot | null }
 interface ReviewBatchResult { id: string; status: 'running' | 'completed' | 'failed'; review_mode?: 'quick' | 'deep'; requested_providers: string[]; reviews: ModelReviewResult[]; final_evaluation: FinalEvaluationResult | null; rechecks: ReviewRecheck[] }
 interface ReportTrustSummary { headline: string; explanation: string; tone: 'high' | 'medium' | 'low' | 'unknown' }
@@ -414,6 +417,7 @@ const historyItems = ref<EssayHistoryItem[]>([])
 const growthSummary = ref<GrowthSummary | null>(null)
 const isLoadingGrowth = ref(false)
 const growthError = ref('')
+const selectedGrowthPointId = ref<string | null>(null)
 const trainingRecords = ref<TopicTrainingSession[]>([])
 const isLoadingTrainingRecords = ref(false)
 const trainingRecordsError = ref('')
@@ -746,7 +750,7 @@ const reportAnnotations = computed<ReviewAnnotationDetail[]>(() => {
   const sourceAnnotations = !isQuickFeedback
     ? reportDeepAnalysis.value.annotations
     : reviewBatch.value?.reviews.flatMap((review) => review.annotations ?? []) ?? []
-  const ordered = deduplicateReportAnnotations(
+  const annotationsByPosition = deduplicateReportAnnotations(
     sourceAnnotations,
     reportEssayText.value,
   ).sort((left, right) => {
@@ -760,24 +764,29 @@ const reportAnnotations = computed<ReviewAnnotationDetail[]>(() => {
   // Quick evaluation deliberately keeps only a compact, immediately useful
   // set. Deep analysis remains the place for the complete annotation pass.
   const limit = isQuickFeedback ? 5 : length < 250 ? 5 : length < 500 ? 7 : length <= 800 ? 10 : 12
-  if (ordered.length <= limit) return ordered
-
-  // Keep a small number of genuine strengths visible, then fill the remaining
-  // positions with the most actionable comments. No synthetic comments are added.
-  const strengths = ordered.filter((item) => item.kind === 'strength').slice(0, 2)
-  const improvements = ordered
+  const improvements = annotationsByPosition
     .filter((item) => item.kind !== 'strength')
-    .sort((left, right) => severityRank[left.severity ?? 'low'] - severityRank[right.severity ?? 'low'])
-  const selectedIds = new Set(strengths.map((item) => item.id))
-  for (const item of improvements) {
-    if (selectedIds.size >= limit) break
-    selectedIds.add(item.id)
+    .sort((left, right) => {
+      const severityDifference = severityRank[left.severity ?? 'low'] - severityRank[right.severity ?? 'low']
+      if (severityDifference) return severityDifference
+      const leftStart = annotationRange(reportEssayText.value, left)?.start ?? Number.MAX_SAFE_INTEGER
+      const rightStart = annotationRange(reportEssayText.value, right)?.start ?? Number.MAX_SAFE_INTEGER
+      return leftStart - rightStart
+    })
+  const strengths = annotationsByPosition.filter((item) => item.kind === 'strength')
+
+  // A report should first help the student change something. When there are
+  // real, located issues, highlights do not occupy the compact quick-feedback
+  // quota. A genuinely strong essay still keeps one positive annotation rather
+  // than inventing an issue merely to fill the list.
+  if (isQuickFeedback) {
+    if (improvements.length) return improvements.slice(0, limit)
+    return strengths.slice(0, 1)
   }
-  for (const item of ordered) {
-    if (selectedIds.size >= limit) break
-    selectedIds.add(item.id)
-  }
-  return ordered.filter((item) => selectedIds.has(item.id))
+
+  // Deep feedback remains comprehensive, but keeps actionable feedback first
+  // in its directory. Source order is still preserved by the left-hand essay.
+  return [...improvements, ...strengths].slice(0, limit)
 })
 const selectedReportAnnotation = computed(() =>
   reportAnnotations.value.find((annotation) => annotation.id === selectedReportAnnotationId.value)
@@ -829,7 +838,6 @@ const reportDetailedSummary = computed(() =>
     ? reportDeepAnalysis.value.overall_analysis.trim()
     : reviewBatch.value?.final_evaluation?.summary || '作文已经完成整体评测，可以从最重要的一项建议开始修改。',
 )
-const reportTopStrengths = computed(() => reportStrengths.value.slice(0, 2))
 const reportTopIssues = computed(() => reportSuggestions.value.slice(0, 3))
 const reportTrustSummary = computed<ReportTrustSummary>(() => {
   const final = reviewBatch.value?.final_evaluation
@@ -1702,7 +1710,9 @@ async function loadGrowth(): Promise<void> {
   try {
     const response = await apiFetch(`${apiBaseUrl}/api/essays/growth/summary`)
     if (!response.ok) throw new Error('成长记录暂时无法加载')
-    growthSummary.value = await response.json() as GrowthSummary
+    const payload = await response.json() as GrowthSummary
+    growthSummary.value = payload
+    selectedGrowthPointId.value = payload.overall_trend?.points.at(-1)?.essay_id ?? null
   } catch (error) {
     growthError.value = userFacingError(error, '成长记录暂时无法加载，请稍后重试。')
   } finally {
@@ -2550,8 +2560,56 @@ function growthTrendPolyline(trend: GrowthDimensionTrend): string {
     .join(' ')
 }
 
-function growthOverallLatest(): GrowthDimensionPoint | null {
-  return growthSummary.value?.overall_trend?.points.at(-1) ?? null
+function selectedGrowthPoint(): GrowthDimensionPoint | null {
+  const points = growthSummary.value?.overall_trend?.points ?? []
+  return points.find((point) => point.essay_id === selectedGrowthPointId.value) ?? points.at(-1) ?? null
+}
+
+function selectGrowthPoint(point: GrowthDimensionPoint): void {
+  selectedGrowthPointId.value = point.essay_id
+}
+
+function growthLatestDimensions(): NonNullable<GrowthSummary['latest']>['dimension_scores'] {
+  return growthSummary.value?.latest?.dimension_scores.filter(
+    (item) => Number.isFinite(item.score) && Number.isFinite(item.max_score) && item.max_score > 0,
+  ) ?? []
+}
+
+function growthDimensionRatio(item: { score: number; max_score: number }): number {
+  return item.max_score > 0 ? item.score / item.max_score : 0
+}
+
+function growthStrongestDimension(): ReviewDimension['dimension'] | null {
+  const dimensions = growthLatestDimensions()
+  if (!dimensions.length) return null
+  return [...dimensions].sort((left, right) => growthDimensionRatio(right) - growthDimensionRatio(left))[0].dimension
+}
+
+function growthWeakestDimension(): ReviewDimension['dimension'] | null {
+  const dimensions = growthLatestDimensions()
+  if (!dimensions.length) return null
+  return [...dimensions].sort((left, right) => growthDimensionRatio(left) - growthDimensionRatio(right))[0].dimension
+}
+
+function growthDimensionRole(dimension: ReviewDimension['dimension']): string {
+  const strongest = growthStrongestDimension()
+  const weakest = growthWeakestDimension()
+  if (strongest === weakest) return ''
+  if (dimension === strongest) return '当前较强'
+  if (dimension === weakest) return '优先提升'
+  return ''
+}
+
+function signedScoreChange(change: number | null): string {
+  if (change === null || Math.abs(change) < 0.05) return '0'
+  return `${change > 0 ? '+' : ''}${change}`
+}
+
+function revisionOutcomeText(revision: GrowthRecentRevision): string {
+  if (revision.outcome === 'improved') return '这次修改后，综合表现有所提升。'
+  if (revision.outcome === 'declined') return '这一版部分表现发生变化，可以继续对照反馈调整。'
+  if (revision.outcome === 'steady') return '这次修改已经形成新版本，综合表现变化不大。'
+  return '两个版本的总分数据不完整，暂不判断升降。'
 }
 
 function growthOverallPolyline(): string {
@@ -2582,6 +2640,13 @@ function growthTrendStatus(trend: GrowthDimensionTrend): string {
   if (trend.direction === 'improving') return `近期提升 ${Math.abs(trend.change ?? 0)} 分`
   if (trend.direction === 'declining') return `近期有所波动 ${Math.abs(trend.change ?? 0)} 分`
   return '近期表现基本稳定'
+}
+
+function growthTrendSymbol(trend: GrowthDimensionTrend): string {
+  if (trend.direction === 'improving') return '↑'
+  if (trend.direction === 'declining') return '↓'
+  if (trend.direction === 'steady') return '→'
+  return ''
 }
 
 function growthRevisionSummary(): string {
@@ -2932,43 +2997,22 @@ async function openHistoryEssay(item: Pick<EssayHistoryItem, 'id'>, preferredVie
     submissionOrigin.value = essay.origin_type ?? 'standard'
     fullScore.value = essay.full_score
     essayText.value = essay.original_text ?? ''
-    selectedImages.value = essay.sources
-      .filter((source) => source.source_type === 'image_upload')
-      .map((source) => ({
-        id: `saved-${source.id}`,
-        file: new File([], source.file_name ?? '已保存作文图片'),
-        previewUrl: '',
-        sourceId: source.id,
-        quality: source.quality ?? undefined,
-      }))
-    submissionMode.value = selectedImages.value.length ? 'image' : 'text'
-    await Promise.all(selectedImages.value.map(async (image) => {
-      if (!image.sourceId) return
-      image.previewUrl = await loadAuthenticatedImage(image.sourceId, 'original') ?? ''
-      image.processedPreviewUrl = image.quality?.processed_available
-        ? await loadAuthenticatedImage(image.sourceId, 'processed')
-        : undefined
-    }))
-    selectedImages.value = [...selectedImages.value]
-    const [batchesResponse, baiduOcrResponse, reportResponse] = await Promise.all([
+    submissionMode.value = essay.sources.some((source) => source.source_type === 'image_upload') ? 'image' : 'text'
+    // A history item is a read-only report. Do not preload source images or OCR
+    // results here: neither is needed to render a saved result and doing so made
+    // opening history feel like a fresh evaluation.
+    const [batchesResponse, reportResponse] = await Promise.all([
       apiFetch(`${apiBaseUrl}/api/essays/${item.id}/reviews/batches`),
-      apiFetch(`${apiBaseUrl}/api/essays/${item.id}/ocr?engine=baidu`),
       apiFetch(`${apiBaseUrl}/api/essays/${item.id}/reports/latest`),
     ])
+    if (!reportResponse.ok) throw new Error('这篇历史作文没有可查看的评测报告')
+    const final = await reportResponse.json() as FinalEvaluationResult
     if (batchesResponse.ok) {
       const batches = await batchesResponse.json() as ReviewBatchResult[]
-      reviewBatch.value = batches.find((batch) => batch.rechecks.length > 0 && hasUsableFinalEvaluation(batch))
-        ?? batches.find((batch) => hasUsableFinalEvaluation(batch))
-        ?? batches[0]
-        ?? null
+      reviewBatch.value = batches.find((batch) => batch.final_evaluation?.id === final.id) ?? null
       reviewResult.value = reviewBatch.value?.reviews.find((review) => review.model_provider === 'deepseek') ?? null
-      polishResult.value = reviewBatch.value?.final_evaluation?.polish ?? null
-      if (reviewBatch.value?.status === 'failed' && !hasUsableFinalEvaluation(reviewBatch.value)) {
-        reviewErrorMessage.value = '上次评测暂未完成。作文内容已经保留，可以在服务恢复后重新尝试。'
-      }
     }
-    if (!hasUsableFinalEvaluation(reviewBatch.value) && reportResponse.ok) {
-      const final = await reportResponse.json() as FinalEvaluationResult
+    if (!reviewBatch.value) {
       reviewBatch.value = {
         id: `history-${item.id}`,
         status: 'completed',
@@ -2978,44 +3022,11 @@ async function openHistoryEssay(item: Pick<EssayHistoryItem, 'id'>, preferredVie
         rechecks: [],
       }
     }
-    if (reviewBatch.value?.status === 'running') {
-      isBatchReviewing.value = true
-      startReviewPolling()
-    } else if (deepAnalysisIsRunning.value) {
-      startDepthAnalysisPolling()
-    }
-    ocrRuns.value = {}
-    if (baiduOcrResponse.ok) {
-      ocrRuns.value.baidu = await baiduOcrResponse.json() as OcrRunResult
-    }
-    // Old reports may only have Paddle OCR results. Query them only after no
-    // Baidu run was found, so opening history never makes the normal path look
-    // like a provider switch or triggers an unnecessary request.
-    if (!ocrRuns.value.baidu) {
-      const paddleOcrResponse = await apiFetch(`${apiBaseUrl}/api/essays/${item.id}/ocr?engine=paddle`)
-      if (paddleOcrResponse.ok) {
-        ocrRuns.value.paddle = await paddleOcrResponse.json() as OcrRunResult
-      }
-    }
-    selectedOcrEngine.value = ocrRuns.value.baidu ? 'baidu' : 'paddle'
-    ocrResult.value = ocrRuns.value.baidu ?? ocrRuns.value.paddle ?? null
-    if (ocrResult.value) {
-      await openCorrection(false)
-    } else {
-      clearOcrResult()
-    }
-    const availableView: EssayWorkflowView = hasUsableFinalEvaluation(reviewBatch.value)
-      ? 'report'
-      : ocrResult.value
-        ? 'correction'
-        : 'review'
-    const restoredView: EssayWorkflowView = preferredView === 'compose'
-      || (preferredView === 'correction' && Boolean(ocrResult.value))
-      || (preferredView === 'review' && Boolean(successResult.value))
-      || (preferredView === 'report' && hasUsableFinalEvaluation(reviewBatch.value))
-      ? preferredView
-      : availableView
-    setEssayStage(restoredView, true)
+    reviewBatch.value.final_evaluation = final
+    reviewBatch.value.status = 'completed'
+    isBatchReviewing.value = false
+    polishResult.value = final.polish ?? null
+    setEssayStage(preferredView === 'compose' ? 'compose' : 'report', true)
     await loadVersionHistory(item.id)
   } catch (error) {
     historyError.value = userFacingError(error, '暂时无法打开这篇作文，请稍后重试')
@@ -3051,6 +3062,13 @@ async function runRecheck(recheck: ReviewRecheck): Promise<void> {
 
 async function openAnnotation(annotation: NonNullable<ModelReviewResult['annotations']>[number]): Promise<void> {
   if (!annotation.ocr_block_id || !successResult.value) return
+  if (!ocrResult.value) {
+    const restored = await restoreSavedOcrForAnnotation(successResult.value.id)
+    if (!restored) {
+      reviewErrorMessage.value = '这篇历史作文没有可查看的手写原稿定位信息。'
+      return
+    }
+  }
   annotationReturnToReport.value = currentView.value === 'report'
   setEssayStage('correction', true)
   if (!correctionResult.value && ocrResult.value) await openCorrection()
@@ -3062,6 +3080,25 @@ async function openAnnotation(annotation: NonNullable<ModelReviewResult['annotat
     await nextTick()
     activateCorrectionBlock(annotation.ocr_block_id, false)
   }
+}
+
+async function restoreSavedOcrForAnnotation(essayId: string): Promise<boolean> {
+  for (const engine of ['baidu', 'paddle'] as const) {
+    try {
+      const response = await apiFetch(`${apiBaseUrl}/api/essays/${essayId}/ocr?engine=${engine}`)
+      if (response.status === 404) continue
+      const payload = await response.json() as OcrRunResult & { detail?: string }
+      if (!response.ok || payload.status === 'failed') continue
+      ocrRuns.value = { ...ocrRuns.value, [engine]: payload }
+      ocrResult.value = payload
+      selectedOcrEngine.value = engine
+      return true
+    } catch {
+      // Original-page positioning is optional; the saved report remains usable
+      // when an old OCR record is no longer available.
+    }
+  }
+  return false
 }
 
 function leaveCorrection(): void {
@@ -3314,18 +3351,26 @@ async function exportReportPdf(): Promise<void> {
       throw new Error(safeServerMessage(payload.detail, '报告暂时无法导出，请稍后重试'))
     }
     const blob = await response.blob()
-    if (!blob.size || !blob.type.includes('pdf')) {
+    // Some browsers and reverse proxies do not preserve Blob.type even when the
+    // response is a valid PDF. Check the response contract and the actual file
+    // signature instead of silently rejecting a downloadable report.
+    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+    const signature = await blob.slice(0, 4).text()
+    if (!blob.size || (!contentType.includes('application/pdf') && signature !== '%PDF')) {
       throw new Error('生成的报告文件不完整，请稍后重试')
     }
-    const url = URL.createObjectURL(blob)
+    const pdfBlob = blob.type.includes('pdf') ? blob : new Blob([blob], { type: 'application/pdf' })
+    const url = URL.createObjectURL(pdfBlob)
     const anchor = document.createElement('a')
     anchor.href = url
     const safeTitle = (successResult.value.title || '作文').replace(/[\\/:*?"<>|]/g, '-').slice(0, 80)
     anchor.download = `${safeTitle}-评测报告.pdf`
+    anchor.style.display = 'none'
     document.body.appendChild(anchor)
     anchor.click()
     anchor.remove()
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    // Do not revoke the URL before slower browsers have begun the download.
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
   } catch (error) {
     reviewErrorMessage.value = userFacingError(error, '报告暂时无法导出，请稍后重试')
   } finally {
@@ -3716,15 +3761,51 @@ onBeforeUnmount(() => {
 
           <template v-else-if="growthSummary">
             <header class="growth-story-header">
-              <div><p class="eyebrow">近期成长</p><h2>看看最近哪里变好了</h2><p>基于 {{ growthSummary.work_count }} 篇作品、{{ growthSummary.evaluation_count }} 次正式评测整理。</p></div>
+              <div><p class="eyebrow">成长中心</p><h2>现在的表现，也看长期的变化</h2><p>基于 {{ growthSummary.work_count }} 篇作品、{{ growthSummary.evaluation_count }} 次正式评测整理。</p></div>
               <button v-if="growthError" class="text-button" type="button" @click="void loadGrowth()">更新记录</button>
             </header>
+
+            <div class="growth-overview-grid">
+              <section v-if="growthSummary.latest" class="growth-current-panel" aria-labelledby="growth-current-title">
+                <div class="growth-panel-heading"><div><p class="eyebrow">当前表现</p><h3 id="growth-current-title">最近一次正式评测</h3></div><button class="text-button" type="button" @click="void openHistoryEssay({ id: growthSummary.latest!.essay_id })">查看报告</button></div>
+                <div class="growth-current-score">
+                  <strong>{{ growthSummary.latest.overall_score ?? '--' }}</strong><span>综合分</span>
+                  <div><b>{{ growthSummary.latest.title || '未命名作文' }}</b><small>{{ new Date(growthSummary.latest.evaluated_at).toLocaleDateString('zh-CN') }}</small></div>
+                </div>
+                <div v-if="growthLatestDimensions().length" class="growth-current-dimensions">
+                  <div v-for="dimension in growthLatestDimensions()" :key="dimension.dimension" :class="{ strongest: growthDimensionRole(dimension.dimension) === '当前较强', weakest: growthDimensionRole(dimension.dimension) === '优先提升' }">
+                    <span>{{ dimensionLabel(dimension.dimension) }}<em v-if="growthDimensionRole(dimension.dimension)">{{ growthDimensionRole(dimension.dimension) }}</em></span>
+                    <strong>{{ dimension.score }} <small>/ {{ dimension.max_score }}</small></strong>
+                    <i><b :style="{ width: `${Math.max(0, Math.min(100, growthDimensionRatio(dimension) * 100))}%` }"></b></i>
+                  </div>
+                </div>
+                <p v-else class="growth-section-empty">这份旧记录缺少可比较的维度分数，仍可查看综合分和原报告。</p>
+              </section>
+
+              <section v-if="growthSummary.overall_trend?.points.length" class="growth-trajectory-panel" aria-labelledby="growth-trajectory-title">
+                <div class="growth-panel-heading"><div><p class="eyebrow">成长轨迹</p><h3 id="growth-trajectory-title">总分有没有变化</h3></div><span>{{ growthOverallStatus() }}</span></div>
+                <div v-if="growthSummary.overall_trend.points.length > 1" class="growth-overall-plot">
+                  <svg viewBox="0 0 100 40" role="img" aria-label="历次作文综合评分变化" preserveAspectRatio="none">
+                    <line x1="5" y1="32" x2="95" y2="32" />
+                    <line x1="5" y1="19" x2="95" y2="19" />
+                    <polyline :points="growthOverallPolyline()" />
+                    <g v-for="(point, index) in growthSummary.overall_trend.points" :key="`overall-${point.essay_id}`" class="growth-chart-point" :class="{ selected: selectedGrowthPoint()?.essay_id === point.essay_id }" role="button" tabindex="0" :aria-label="`${point.title || '未命名作文'}，${point.score}分`" @click="selectGrowthPoint(point)" @keydown.enter.prevent="selectGrowthPoint(point)" @keydown.space.prevent="selectGrowthPoint(point)">
+                      <circle class="growth-chart-point-hit" :cx="growthTrendPointX(index, growthSummary.overall_trend.points.length)" :cy="growthTrendPointY(point)" r="4.4" />
+                      <circle class="growth-chart-point-dot" :cx="growthTrendPointX(index, growthSummary.overall_trend.points.length)" :cy="growthTrendPointY(point)" r="1.65"><title>{{ point.title || '未命名作文' }} · {{ new Date(point.evaluated_at).toLocaleDateString('zh-CN') }}：{{ point.score }} / {{ point.max_score }}</title></circle>
+                    </g>
+                  </svg>
+                  <div class="growth-overall-axis"><span>{{ new Date(growthSummary.overall_trend.points[0].evaluated_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) }}</span><span>{{ growthSummary.overall_trend.points.length }} 次评测</span><span>{{ new Date(growthSummary.overall_trend.points[growthSummary.overall_trend.points.length - 1].evaluated_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) }}</span></div>
+                </div>
+                <p v-else class="growth-overall-placeholder">目前只有一个真实数据点。再完成一次正式评测后，这里会连成你的总分轨迹。</p>
+                <div v-if="selectedGrowthPoint()" class="growth-selected-point" aria-live="polite"><div><strong>{{ selectedGrowthPoint()?.title || '未命名作文' }}</strong><span>{{ new Date(selectedGrowthPoint()!.evaluated_at).toLocaleDateString('zh-CN') }} · 第 {{ selectedGrowthPoint()?.version_no }} 版</span></div><b>{{ selectedGrowthPoint()?.score }}<small>/ {{ selectedGrowthPoint()?.max_score }}</small></b></div>
+              </section>
+            </div>
 
             <div v-if="growthSummary.has_long_term_insights" class="growth-conclusions">
               <article class="growth-conclusion growth-conclusion--positive">
                 <span>最近明显改善的能力</span>
                 <strong>{{ growthSummary.recent_improvement_dimension ? dimensionLabel(growthSummary.recent_improvement_dimension) : '近期表现整体稳定' }}</strong>
-                <p>{{ growthSummary.recent_improvement_dimension ? '结合最近几次同一维度的真实评分得出。' : '各项能力暂时没有足够明显的持续上升变化。' }}</p>
+                <p>{{ growthSummary.recent_improvement_dimension ? '由近期同一维度的真实评分变化得出。' : '各项能力暂时没有足够明显的持续上升变化。' }}</p>
               </article>
               <article class="growth-conclusion growth-conclusion--focus">
                 <span>目前最值得继续练习</span>
@@ -3739,32 +3820,11 @@ onBeforeUnmount(() => {
               <div><strong>{{ growthSummary.work_count === 1 ? '第一份成长记录已经开始' : '成长轨迹正在形成' }}</strong><p>再完成 {{ growthSummary.additional_works_needed }} 篇不同作文的评测后，这里会逐渐形成更可靠的长期变化判断。</p></div>
             </div>
 
-            <section v-if="growthSummary.overall_trend?.points.length" class="growth-overall-section">
-              <div class="growth-section-heading"><div><p class="eyebrow">总分轨迹</p><h3>每次正式评测的真实变化</h3></div><p>按评测时间排列，包含同一篇作文的后续版本。</p></div>
-              <div class="growth-overall-chart">
-                <div class="growth-overall-summary">
-                  <span>最近一次</span>
-                  <strong>{{ growthOverallLatest()?.score }}<small>/ {{ growthOverallLatest()?.max_score }}</small></strong>
-                  <p>{{ growthOverallStatus() }}</p>
-                </div>
-                <div v-if="growthSummary.overall_trend.points.length > 1" class="growth-overall-plot">
-                  <svg viewBox="0 0 100 40" role="img" aria-label="历次作文综合评分变化" preserveAspectRatio="none">
-                    <line x1="5" y1="32" x2="95" y2="32" />
-                    <line x1="5" y1="19" x2="95" y2="19" />
-                    <polyline :points="growthOverallPolyline()" />
-                    <circle v-for="(point, index) in growthSummary.overall_trend.points" :key="`overall-${point.essay_id}`" :cx="growthTrendPointX(index, growthSummary.overall_trend.points.length)" :cy="growthTrendPointY(point)" r="1.55"><title>{{ point.title || '未命名作文' }} · {{ new Date(point.evaluated_at).toLocaleDateString('zh-CN') }}：{{ point.score }} / {{ point.max_score }}</title></circle>
-                  </svg>
-                  <div class="growth-overall-axis"><span>{{ new Date(growthSummary.overall_trend.points[0].evaluated_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) }}</span><span>{{ growthSummary.overall_trend.points.length }} 次评测</span><span>{{ new Date(growthSummary.overall_trend.points[growthSummary.overall_trend.points.length - 1].evaluated_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) }}</span></div>
-                </div>
-                <p v-else class="growth-overall-placeholder">再完成一次正式评测后，这里会连成你的总分轨迹。</p>
-              </div>
-            </section>
-
             <section v-if="growthSummary.dimension_trends.some((trend) => trend.points.length)" class="growth-trend-section">
               <div class="growth-section-heading"><div><p class="eyebrow">能力趋势</p><h3>{{ growthSummary.has_long_term_insights ? '不只看总分，也看每项能力' : '目前已有的能力记录' }}</h3></div><p>{{ growthSummary.has_long_term_insights ? '同一评分维度按评测时间排列。' : '当前数据只作记录，不作为长期强弱结论。' }}</p></div>
               <div class="growth-dimension-list">
-                <article v-for="trend in growthSummary.dimension_trends" :key="trend.dimension" class="growth-dimension-row">
-                  <div class="growth-dimension-copy"><strong>{{ dimensionLabel(trend.dimension) }}</strong><span>{{ growthTrendStatus(trend) }}</span></div>
+                <article v-for="trend in growthSummary.dimension_trends" :key="trend.dimension" class="growth-dimension-row" :class="`trend-${trend.direction}`">
+                  <div class="growth-dimension-copy"><strong>{{ dimensionLabel(trend.dimension) }}</strong><span>{{ growthTrendSymbol(trend) }} {{ growthTrendStatus(trend) }}</span></div>
                   <div v-if="growthTrendLatest(trend)" class="growth-dimension-score"><strong>{{ growthTrendLatest(trend)?.score }}</strong><span>/ {{ growthTrendLatest(trend)?.max_score }}</span></div>
                   <svg v-if="trend.points.length > 1" class="growth-sparkline" viewBox="0 0 100 36" role="img" :aria-label="`${dimensionLabel(trend.dimension)}近期评分变化`" preserveAspectRatio="none">
                     <line x1="5" y1="32" x2="95" y2="32" />
@@ -3780,20 +3840,27 @@ onBeforeUnmount(() => {
               <article>
                 <div class="growth-section-heading"><div><p class="eyebrow">最近反复出现</p><h3>值得持续留意的问题</h3></div></div>
                 <ol v-if="growthSummary.recurring_issues.length" class="growth-pattern-list growth-pattern-list--recurring">
-                  <li v-for="(issue, index) in growthSummary.recurring_issues" :key="`${issue.category}-${issue.issue_type}-${issue.label}`"><b>{{ index + 1 }}</b><div><strong>{{ issue.label }}</strong><p>{{ issue.latest_statement }}</p></div><span>{{ issue.work_count }} 篇作品</span></li>
+                  <li v-for="(issue, index) in growthSummary.recurring_issues" :key="`${issue.category}-${issue.issue_type}-${issue.label}`"><b>{{ String(index + 1).padStart(2, '0') }}</b><div><strong>{{ issue.label }}</strong><p>{{ issue.latest_statement }}</p></div><span>{{ issue.work_count }} 篇 · {{ issue.occurrence_count }} 次</span></li>
                 </ol>
                 <p v-else class="growth-section-empty">{{ growthSummary.has_long_term_insights ? '最近没有发现跨多篇作文反复出现的同类问题。' : '作品数量还不足以判断哪些问题会反复出现。' }}</p>
               </article>
               <article>
-                <div class="growth-section-heading"><div><p class="eyebrow">最近已经改善</p><h3>修改带来的真实变化</h3></div></div>
-                <ul v-if="growthSummary.improved_issues.length" class="growth-pattern-list growth-pattern-list--improved">
-                  <li v-for="issue in growthSummary.improved_issues" :key="`${issue.essay_id}-${issue.previous_version_no}-${issue.label}`"><div><strong>{{ issue.label }}</strong><p>{{ issue.explanation }}</p></div><span>第 {{ issue.previous_version_no }} 版 → 第 {{ issue.current_version_no }} 版</span></li>
-                </ul>
-                <p v-else class="growth-section-empty">完成修改并再次评测后，这里会记录有依据的改善。</p>
+                <div class="growth-section-heading"><div><p class="eyebrow">修改是否有效</p><h3>修改带来的真实变化</h3></div></div>
+                <div v-if="growthSummary.recent_revision" class="growth-revision-card">
+                  <div class="growth-revision-title"><div><strong>{{ growthSummary.recent_revision.title || '未命名作文' }}</strong><span>第 {{ growthSummary.recent_revision.previous_version_no }} 版 → 第 {{ growthSummary.recent_revision.current_version_no }} 版 · {{ new Date(growthSummary.recent_revision.evaluated_at).toLocaleDateString('zh-CN') }}</span></div><button class="text-button" type="button" @click="void openHistoryEssay({ id: growthSummary.recent_revision!.current_essay_id })">查看新版</button></div>
+                  <div class="growth-revision-score"><span><small>修改前</small><strong>{{ growthSummary.recent_revision.previous_score ?? '--' }}</strong></span><ArrowRight :size="19" /><span><small>修改后</small><strong>{{ growthSummary.recent_revision.current_score ?? '--' }}</strong></span><b :class="growthSummary.recent_revision.outcome">{{ signedScoreChange(growthSummary.recent_revision.score_change) }}</b></div>
+                  <p>{{ revisionOutcomeText(growthSummary.recent_revision) }}</p>
+                  <ul v-if="growthSummary.recent_revision.dimension_changes.length" class="growth-revision-dimensions">
+                    <li v-for="dimension in growthSummary.recent_revision.dimension_changes" :key="dimension.dimension"><span>{{ dimensionLabel(dimension.dimension) }}</span><strong :class="{ positive: dimension.change > 0, negative: dimension.change < 0 }">{{ dimension.before }} → {{ dimension.after }} <em>{{ signedScoreChange(dimension.change) }}</em></strong></li>
+                  </ul>
+                  <div v-if="growthSummary.recent_revision.persistent_issues.length" class="growth-persistent-issues"><span>仍需关注</span><ul><li v-for="issue in growthSummary.recent_revision.persistent_issues" :key="`${issue.category}-${issue.issue_type}-${issue.label}`"><strong>{{ issue.label }}</strong><p>{{ issue.statement }}</p></li></ul></div>
+                </div>
+                <p v-else class="growth-section-empty">完成一次修改并再次评测后，这里会对照同一篇作文的两个真实版本。</p>
               </article>
             </section>
 
-            <div v-if="growthSummary.revision_summary.comparison_count" class="growth-revision-evidence"><div><p class="eyebrow">修改是否有效</p><strong>{{ growthRevisionSummary() }}</strong></div><p v-if="growthSummary.revision_summary.most_improved_dimension">{{ dimensionLabel(growthSummary.revision_summary.most_improved_dimension) }}在 {{ growthSummary.revision_summary.most_improved_dimension_count }} 次修改中有明确提升。</p></div>
+            <div v-if="growthSummary.revision_summary.comparison_count" class="growth-revision-evidence"><div><p class="eyebrow">多次修改记录</p><strong>{{ growthRevisionSummary() }}</strong></div><p v-if="growthSummary.revision_summary.most_improved_dimension">{{ dimensionLabel(growthSummary.revision_summary.most_improved_dimension) }}在 {{ growthSummary.revision_summary.most_improved_dimension_count }} 次修改中有明确提升。</p></div>
+            <div class="growth-history-link"><div><strong>想看看每一次变化来自哪篇作文？</strong><p>作品档案按同一篇作文归纳初稿和后续版本。</p></div><button class="secondary-button" type="button" @click="settingsSection = 'essays'; void loadHistory()">查看我的作文<ChevronRight :size="17" /></button></div>
           </template>
         </section>
 
@@ -3866,86 +3933,11 @@ onBeforeUnmount(() => {
       </section>
       <section v-if="currentView === 'report'" class="report-view">
         <ol class="workflow-steps workflow-journey" aria-label="评测流程"><li v-for="(step, index) in workflowSteps" :key="step" :class="{ active: workflowStep === index + 1, done: workflowStep > index + 1 }"><span><Check v-if="workflowStep > index + 1" :size="13" /><template v-else>{{ index + 1 }}</template></span><strong>{{ step }}</strong></li></ol>
-        <div class="page-heading product-heading report-page-heading"><div><p class="eyebrow">学习反馈 · {{ successResult ? revisionLabel(successResult.version_no) : '' }}</p><h1>{{ successResult?.title || '未命名作文' }}</h1><p>先看整体表现和最值得修改的一处。</p></div><div class="task-heading-actions"><label v-if="versionHistory && versionHistory.items.length > 1" class="report-version-switcher"><span>查看版本</span><select :value="successResult?.id" :disabled="isRestoringHistory" @change="void openVersionReport($event)"><option v-for="item in versionHistory.items" :key="item.id" :value="item.id">{{ revisionLabel(item.version_no) }}</option></select></label><button class="text-button" type="button" :disabled="isBusy" @click="startNewEssay('image')">开始新评测</button><button class="icon-text-button secondary-button" type="button" :disabled="isExportingReport" @click="void exportReportPdf"><Download :size="16" />{{ isExportingReport ? '正在生成' : '导出 PDF' }}</button></div></div>
+        <div class="page-heading product-heading report-page-heading"><div><p class="eyebrow">学习反馈 · {{ successResult ? revisionLabel(successResult.version_no) : '' }}</p><h1>{{ successResult?.title || '未命名作文' }}</h1><p>先看整体表现和最值得修改的一处。</p></div><div class="task-heading-actions"><label v-if="versionHistory && versionHistory.items.length > 1" class="report-version-switcher"><span>查看版本</span><select :value="successResult?.id" :disabled="isRestoringHistory" @change="void openVersionReport($event)"><option v-for="item in versionHistory.items" :key="item.id" :value="item.id">{{ revisionLabel(item.version_no) }}</option></select></label><button class="text-button" type="button" :disabled="isBusy" @click="startNewEssay('image')">开始新评测</button><button class="icon-text-button secondary-button" type="button" :disabled="isExportingReport" @click="void exportReportPdf()"><Download :size="16" />{{ isExportingReport ? '正在生成' : '导出 PDF' }}</button></div></div>
         <p v-if="reviewErrorMessage" class="review-error" role="alert">{{ reviewErrorMessage }}</p>
 
         <p v-if="isRestoringHistory && !reviewBatch?.final_evaluation" class="loading-state"><LoaderCircle :size="20" class="spin" />正在打开评测报告…</p>
         <div v-else-if="!reviewBatch?.final_evaluation" class="report-empty friendly-empty"><div class="empty-art-slot"><FileText :size="28" /></div><div><strong>暂时没有可查看的评测报告</strong><p>完成一次评测后，综合结果和修改建议会显示在这里。</p></div><button class="primary-button" type="button" @click="startNewEssay('image')">开始新评测</button></div>
-
-        <section v-if="reviewBatch?.final_evaluation" class="report-first-look" aria-labelledby="performance-title">
-          <div class="report-result-overview">
-            <div class="report-score-block">
-              <div class="report-score-value" :class="{ 'is-empty': reviewBatch.final_evaluation.overall_score === null }">
-                <strong>{{ reviewBatch.final_evaluation.overall_score ?? '已完成' }}</strong>
-                <span>{{ reviewBatch.final_evaluation.overall_score === null ? '评测' : '分' }}</span>
-              </div>
-              <p v-if="currentRevisionImprovement !== null && !versionComparison" class="version-improvement" :class="{ positive: currentRevisionImprovement > 0 }">较上一版 {{ currentRevisionImprovement > 0 ? `提高 ${currentRevisionImprovement} 分` : currentRevisionImprovement === 0 ? '持平' : `变化 ${currentRevisionImprovement} 分` }}</p>
-            </div>
-            <div class="report-result-copy">
-              <div class="report-result-kicker">
-                <p class="eyebrow">综合结果</p>
-                <button class="report-consistency" :class="`report-consistency--${reportTrustSummary.tone}`" type="button" aria-controls="report-trust-details" @click="openReportTrustDetails"><ShieldCheck :size="15" /><span><strong>{{ reportTrustSummary.headline }}</strong><small>{{ reportTrustSummary.explanation }}</small></span><ChevronDown :size="15" /></button>
-              </div>
-              <h2 id="performance-title">{{ reportTopSummary }}</h2>
-            </div>
-          </div>
-
-          <div v-if="versionComparison" class="revision-result-summary" :class="`outcome-${versionComparison.outcome}`">
-            <div class="revision-score-route" aria-label="新旧版本综合分变化">
-              <span>{{ versionComparison.previous_score ?? '—' }}</span>
-              <ArrowRight :size="18" />
-              <strong>{{ versionComparison.current_score ?? '—' }}</strong>
-              <em v-if="versionComparison.score_change !== null">{{ versionComparison.score_change > 0 ? `+${versionComparison.score_change}` : versionComparison.score_change === 0 ? '持平' : versionComparison.score_change }}</em>
-            </div>
-            <div class="revision-result-copy">
-              <p class="eyebrow">这次修改的结果</p>
-              <h3>{{ versionOutcomeTitle }}</h3>
-              <span>{{ versionOutcomeDescription }}</span>
-            </div>
-            <div v-if="previousPriorityResolution" class="revision-priority-resolution" :class="previousPriorityResolution.state">
-              <small>{{ previousPriorityResolution.label }}</small>
-              <p>{{ previousPriorityResolution.text }}</p>
-            </div>
-          </div>
-
-          <div class="report-top-priority">
-            <div class="report-top-priority-number">01</div>
-            <div>
-              <p>最值得先改</p>
-              <h3>{{ reportTopIssues[0]?.suggestion || (weakestDimension ? `优先改善${dimensionLabel(weakestDimension.dimension)}` : '从一处具体表达开始修改') }}</h3>
-              <span v-if="reportTopIssues[0]?.example_revision">{{ reportTopIssues[0].example_revision }}</span>
-              <span v-else>结合下方完整总评，先完成一处清楚、具体的修改。</span>
-            </div>
-            <button class="primary-button" type="button" @click="reviseEssay()"><Edit3 :size="17" />修改作文</button>
-          </div>
-
-          <div class="report-top-insights" :class="{ 'single-column': reportTopIssues.length < 2 }">
-            <section class="report-top-strengths" aria-labelledby="top-strengths-title">
-              <p class="report-top-label" id="top-strengths-title"><CheckCircle2 :size="17" />做得好的地方</p>
-              <ul v-if="reportTopStrengths.length">
-                <li v-for="strength in reportTopStrengths" :key="`${strength.dimension}-${strength.comment}`"><strong>{{ dimensionLabel(strength.dimension) }}</strong><span>{{ strength.comment }}</span></li>
-              </ul>
-              <p v-else class="report-top-fallback"><strong>{{ bestDimension ? dimensionLabel(bestDimension.dimension) : '整体表达' }}</strong><span>{{ bestDimension ? '这是本次评分中表现相对最好的一项。' : '完整优点请继续查看下方总评。' }}</span></p>
-            </section>
-            <section v-if="reportTopIssues.length > 1" class="report-top-issues" aria-labelledby="top-issues-title">
-              <p class="report-top-label" id="top-issues-title"><CircleAlert :size="17" />还需要关注</p>
-              <ol>
-                <li v-for="(issue, index) in reportTopIssues.slice(1, 3)" :key="issue.suggestion"><span>0{{ index + 2 }}</span><p>{{ issue.suggestion }}</p></li>
-              </ol>
-            </section>
-          </div>
-
-          <div v-if="reviewBatch.final_evaluation.dimension_scores?.length" class="report-score-breakdown">
-            <div class="report-score-breakdown-heading"><div><p class="eyebrow">评分构成</p><h3>总分是怎么得到的</h3></div><p>对照各项表现，找到优势和下一步练习重点。</p></div>
-            <div class="report-dimensions report-top-dimensions">
-              <article v-for="dimension in reviewBatch.final_evaluation.dimension_scores" :key="dimension.dimension" :class="{ best: bestDimension?.dimension === dimension.dimension, weakest: bestDimension?.dimension !== dimension.dimension && weakestDimension?.dimension === dimension.dimension }">
-                <div><strong>{{ dimensionLabel(dimension.dimension) }}</strong><span>{{ dimension.score }} / {{ dimension.max_score }}</span></div>
-                <div class="dimension-progress"><i :style="{ width: `${dimension.max_score > 0 ? Math.max(0, Math.min(100, (dimension.score / dimension.max_score) * 100)) : 0}%` }"></i></div>
-                <small v-if="bestDimension?.dimension === dimension.dimension">表现最好</small><small v-else-if="weakestDimension?.dimension === dimension.dimension">优先提升</small>
-              </article>
-            </div>
-          </div>
-        </section>
 
         <nav v-if="reviewBatch?.final_evaluation" class="report-reading-nav" aria-label="报告快速导航">
           <span>建议先看</span>
@@ -3968,6 +3960,63 @@ onBeforeUnmount(() => {
           </aside>
 
           <div class="report-feedback-stream">
+            <section class="report-first-look" aria-labelledby="performance-title">
+              <div class="report-result-overview">
+                <div class="report-score-block">
+                  <div class="report-score-value" :class="{ 'is-empty': reviewBatch.final_evaluation.overall_score === null }">
+                    <strong>{{ reviewBatch.final_evaluation.overall_score ?? '已完成' }}</strong>
+                    <span>{{ reviewBatch.final_evaluation.overall_score === null ? '评测' : '分' }}</span>
+                  </div>
+                  <p v-if="currentRevisionImprovement !== null && !versionComparison" class="version-improvement" :class="{ positive: currentRevisionImprovement > 0 }">较上一版 {{ currentRevisionImprovement > 0 ? `提高 ${currentRevisionImprovement} 分` : currentRevisionImprovement === 0 ? '持平' : `变化 ${currentRevisionImprovement} 分` }}</p>
+                </div>
+                <div class="report-result-copy">
+                  <div class="report-result-kicker">
+                    <p class="eyebrow">综合结果</p>
+                    <button class="report-consistency" :class="`report-consistency--${reportTrustSummary.tone}`" type="button" aria-controls="report-trust-details" @click="openReportTrustDetails"><ShieldCheck :size="15" /><span><strong>{{ reportTrustSummary.headline }}</strong><small>{{ reportTrustSummary.explanation }}</small></span><ChevronDown :size="15" /></button>
+                  </div>
+                  <h2 id="performance-title">{{ reportTopSummary }}</h2>
+                </div>
+              </div>
+
+              <div v-if="versionComparison" class="revision-result-summary" :class="`outcome-${versionComparison.outcome}`">
+                <div class="revision-score-route" aria-label="新旧版本综合分变化">
+                  <span>{{ versionComparison.previous_score ?? '—' }}</span>
+                  <ArrowRight :size="18" />
+                  <strong>{{ versionComparison.current_score ?? '—' }}</strong>
+                  <em v-if="versionComparison.score_change !== null">{{ versionComparison.score_change > 0 ? `+${versionComparison.score_change}` : versionComparison.score_change === 0 ? '持平' : versionComparison.score_change }}</em>
+                </div>
+                <div class="revision-result-copy">
+                  <p class="eyebrow">这次修改的结果</p>
+                  <h3>{{ versionOutcomeTitle }}</h3>
+                  <span>{{ versionOutcomeDescription }}</span>
+                </div>
+                <div v-if="previousPriorityResolution" class="revision-priority-resolution" :class="previousPriorityResolution.state">
+                  <small>{{ previousPriorityResolution.label }}</small>
+                  <p>{{ previousPriorityResolution.text }}</p>
+                </div>
+              </div>
+
+              <div v-if="reviewBatch.final_evaluation.dimension_scores?.length" class="report-score-breakdown">
+                <div class="report-score-breakdown-heading"><div><p class="eyebrow">评分构成</p><h3>四项表现</h3></div><p>优势和下一步练习重点</p></div>
+                <div class="report-dimensions report-top-dimensions">
+                  <article v-for="dimension in reviewBatch.final_evaluation.dimension_scores" :key="dimension.dimension" :class="{ best: bestDimension?.dimension === dimension.dimension, weakest: bestDimension?.dimension !== dimension.dimension && weakestDimension?.dimension === dimension.dimension }">
+                    <div><strong>{{ dimensionLabel(dimension.dimension) }}</strong><span>{{ dimension.score }} / {{ dimension.max_score }}</span></div>
+                    <div class="dimension-progress"><i :style="{ width: `${dimension.max_score > 0 ? Math.max(0, Math.min(100, (dimension.score / dimension.max_score) * 100)) : 0}%` }"></i></div>
+                    <small v-if="bestDimension?.dimension === dimension.dimension">表现最好</small><small v-else-if="weakestDimension?.dimension === dimension.dimension">优先提升</small>
+                  </article>
+                </div>
+              </div>
+
+              <div class="report-top-priority">
+                <div class="report-top-priority-number">01</div>
+                <div>
+                  <p>最值得先改</p>
+                  <h3>{{ reportTopIssues[0]?.suggestion || (weakestDimension ? `优先改善${dimensionLabel(weakestDimension.dimension)}` : '从一处具体表达开始修改') }}</h3>
+                  <span v-if="reportTopIssues[0]?.example_revision">{{ reportTopIssues[0].example_revision }}</span>
+                  <span v-else>结合下方完整总评，先完成一处清楚、具体的修改。</span>
+                </div>
+              </div>
+            </section>
 
         <section v-if="reviewBatch?.final_evaluation && !isLegacyReport" class="deep-analysis-entry" :class="`state-${deepAnalysisStatus}`" aria-labelledby="deep-analysis-entry-title">
           <div>
@@ -4099,9 +4148,9 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-if="reviewBatch?.final_evaluation" class="polish-learning" aria-labelledby="polish-title">
-          <div class="report-section-heading"><div><p class="eyebrow">作文润色</p><h2 id="polish-title">保留你的作文，只把表达变得更好</h2><p>润色不会覆盖原稿，也不会替你重新写一篇作文。每一处修改都会说明原因。</p></div><button v-if="!polishResult" class="primary-button" type="button" :disabled="isPolishing" @click="void requestPolish"><LoaderCircle v-if="isPolishing" :size="17" class="spin" /><Sparkles v-else :size="17" />{{ isPolishing ? '正在逐句润色' : '生成润色对照' }}</button></div>
+          <div class="report-section-heading"><div><p class="eyebrow">作文润色</p><h2 id="polish-title">保留你的作文，只把表达变得更好</h2><p>润色不会覆盖原稿，也不会替你重新写一篇作文。每一处修改都会说明原因。</p></div><button v-if="!polishResult" class="primary-button" type="button" :disabled="isPolishing" :aria-busy="isPolishing" @click="void requestPolish()"><LoaderCircle v-if="isPolishing" :size="17" class="spin" /><Sparkles v-else :size="17" />{{ isPolishing ? '正在逐句润色' : '生成润色对照' }}</button></div>
           <div v-if="isPolishing" class="polish-loading" role="status"><span><LoaderCircle :size="24" class="spin" /></span><div><strong>正在保留原意，逐句改善表达</strong><p>会结合本次总评和优先建议，生成可对照的修改稿。</p></div></div>
-          <p v-else-if="polishErrorMessage" class="review-error">{{ polishErrorMessage }} <button type="button" @click="void requestPolish">重试</button></p>
+          <p v-else-if="polishErrorMessage" class="review-error">{{ polishErrorMessage }} <button type="button" @click="void requestPolish()">重试</button></p>
           <div v-else-if="polishResult" class="polish-result">
             <div class="polish-overview"><CheckCircle2 :size="20" /><div><strong>本次润色重点</strong><p>{{ polishResult.overview }}</p></div><button class="text-button" type="button" @click="void requestPolish(true)">重新生成</button></div>
             <div class="polish-view-switch" role="group" aria-label="润色稿查看方式"><button type="button" :class="{ active: polishViewMode === 'compare' }" @click="polishViewMode = 'compare'">原文对照</button><button type="button" :class="{ active: polishViewMode === 'polished' }" @click="polishViewMode = 'polished'">只看润色稿</button></div>

@@ -547,6 +547,8 @@ async def export_latest_report_pdf(
         content=content,
         media_type="application/pdf",
         headers={
+            "Content-Length": str(len(content)),
+            "Cache-Control": "no-store",
             "Content-Disposition": (
                 'attachment; filename="wenheng-report.pdf"; '
                 "filename*=UTF-8''%E6%96%87%E8%A1%A1%E4%BD%9C%E6%96%87%E8%AF%84%E6%B5%8B%E6%8A%A5%E5%91%8A.pdf"

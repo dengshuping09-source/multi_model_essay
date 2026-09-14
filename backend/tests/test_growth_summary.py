@@ -55,6 +55,17 @@ def make_record(
     return essay, final
 
 
+def test_no_formal_evaluations_returns_a_safe_empty_summary() -> None:
+    result = build_growth_summary([])
+    validated = EssayGrowthSummaryResponse.model_validate(result)
+
+    assert validated.evaluation_count == 0
+    assert validated.work_count == 0
+    assert validated.latest is None
+    assert validated.overall_trend.points == []
+    assert validated.recent_revision is None
+
+
 def test_one_work_shows_snapshot_without_long_term_claims() -> None:
     result = build_growth_summary([make_record(day=1, scores=(20, 18, 19, 21))])
 
@@ -68,6 +79,22 @@ def test_one_work_shows_snapshot_without_long_term_claims() -> None:
     assert result["latest"]["dimension_scores"]
     assert result["overall_trend"]["direction"] == "insufficient"
     assert result["overall_trend"]["points"][0]["score"] == 78
+
+
+def test_two_works_show_recent_change_without_claiming_a_long_term_trend() -> None:
+    result = build_growth_summary(
+        [
+            make_record(day=1, scores=(18, 18, 18, 18)),
+            make_record(day=2, scores=(19, 18, 20, 18)),
+        ]
+    )
+
+    assert result["work_count"] == 2
+    assert result["has_long_term_insights"] is False
+    assert result["overall_trend"]["direction"] == "insufficient"
+    assert result["overall_trend"]["recent_change"] == 3
+    assert result["recent_improvement_dimension"] is None
+    assert result["recurring_issues"] == []
 
 
 def test_database_decimal_scores_are_included_in_growth_trends() -> None:
@@ -157,6 +184,15 @@ def test_version_change_reuses_real_comparison_for_improved_issue_and_revision_r
     assert result["work_count"] == 1
     assert result["revision_summary"]["comparison_count"] == 1
     assert result["revision_summary"]["improved_count"] == 1
+    assert result["recent_revision"]["previous_score"] == 75
+    assert result["recent_revision"]["current_score"] == 79
+    assert result["recent_revision"]["score_change"] == 4
+    assert result["recent_revision"]["dimension_changes"][0] == {
+        "dimension": "content_and_ideas",
+        "before": 19,
+        "after": 20,
+        "change": 1,
+    }
     assert result["improved_issues"][0]["label"] == "句子规范"
     assert result["improved_issues"][0]["previous_version_no"] == 1
     assert result["improved_issues"][0]["current_version_no"] == 2
@@ -174,6 +210,7 @@ def test_incomplete_old_dimension_data_degrades_without_error() -> None:
     assert result["has_long_term_insights"] is False
     assert len(result["dimension_trends"][0]["points"]) == 1
     assert result["dimension_trends"][1]["points"] == []
+    assert result["recent_revision"] is None
 
 
 def test_many_works_keep_recent_readable_window_and_match_api_schema() -> None:

@@ -5,7 +5,7 @@ from typing import Literal
 
 
 SCORING_STANDARD_VERSION = "cn-essay-v2"
-PROMPT_VERSION = "essay-review-v5-quick-focused-feedback"
+PROMPT_VERSION = "essay-review-v6-problem-first-feedback"
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,8 @@ def scoring_instruction(context: EssayReviewContext, essay_text: str = "") -> st
         "未提供的信息不得扣分。引用只能使用学生原文中连续、完全一致的片段；建议要具体、适合该年级学生执行。",
         f"作文约 {char_count} 个字符。",
         "这是快速评测阶段：总评保持简短；每个维度最多保留一处原文依据；给出 1–3 条最高优先级修改建议。",
-        "同时只挑选 1–2 条最重要、能够精确回到原文的反馈。每条都必须填写原文片段、判断和可执行建议；最多一条可以是值得保留的亮点。",
+        "同时只挑选 1–2 条最重要、能够精确回到原文的反馈。若原文存在真实且可定位的修改点，应优先返回 kind=improvement，并写清问题、原因和可执行建议；亮点最多一条，且不能挤占需要修改的问题。",
+        "不要为了数量制造语病或把正常表达当成错误；如果作文整体质量较好、确实没有可验证的问题，可以少给或不提供问题反馈。",
         "不要进行全文逐句扫描、完整错别字/病句/标点检查、全文润色、长示例或技术说明；这些只在学生主动开始深度评测后补充。",
         "如果学生原文主要是中文，除原文引用和固定 JSON 枚举值外，所有面向学生的文字必须使用自然、简体中文，不得输出英文句子。",
     ]

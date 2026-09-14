@@ -138,6 +138,37 @@ class GrowthRevisionSummaryResponse(BaseModel):
     most_improved_dimension_count: int
 
 
+class GrowthRevisionDimensionChangeResponse(BaseModel):
+    dimension: str
+    before: float
+    after: float
+    change: float
+
+
+class GrowthRevisionIssueResponse(BaseModel):
+    category: str
+    issue_type: str | None
+    label: str
+    statement: str
+    explanation: str
+
+
+class GrowthRecentRevisionResponse(BaseModel):
+    root_essay_id: UUID
+    previous_essay_id: UUID
+    current_essay_id: UUID
+    title: str | None
+    evaluated_at: datetime
+    previous_version_no: int
+    current_version_no: int
+    previous_score: float | None
+    current_score: float | None
+    score_change: float | None
+    outcome: Literal["improved", "steady", "declined", "unavailable"]
+    dimension_changes: list[GrowthRevisionDimensionChangeResponse]
+    persistent_issues: list[GrowthRevisionIssueResponse]
+
+
 class GrowthLatestEvaluationResponse(BaseModel):
     essay_id: UUID
     title: str | None
@@ -160,6 +191,7 @@ class EssayGrowthSummaryResponse(BaseModel):
     recurring_issues: list[GrowthIssuePatternResponse]
     improved_issues: list[GrowthImprovedIssueResponse]
     revision_summary: GrowthRevisionSummaryResponse
+    recent_revision: GrowthRecentRevisionResponse | None
 
 
 class EssayVersionSummaryResponse(BaseModel):

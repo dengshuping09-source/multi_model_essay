@@ -79,6 +79,44 @@ def test_quick_review_keeps_core_original_text_feedback() -> None:
     assert original.annotations
 
 
+def test_quick_review_prioritizes_located_improvements_over_strengths() -> None:
+    original = full_review_output().model_copy(
+        update={
+            "annotations": [
+                ReviewAnnotation(
+                    category="language",
+                    kind="strength",
+                    severity="low",
+                    quote="春雨落在窗台上",
+                    comment="开头有画面感。",
+                    suggestion="这处环境描写值得保留。",
+                ),
+                ReviewAnnotation(
+                    category="structure",
+                    kind="improvement",
+                    severity="high",
+                    quote="放学后，我和妈妈一起走回家",
+                    comment="事件推进较快，缺少承接。",
+                    suggestion="补充转场或人物动作，让叙事更连贯。",
+                ),
+                ReviewAnnotation(
+                    category="language",
+                    kind="improvement",
+                    severity="medium",
+                    quote="一起走回家",
+                    comment="表达可以更具体。",
+                    suggestion="补充一路上的动作。",
+                ),
+            ]
+        }
+    )
+
+    quick = _quick_review_output(original)
+
+    assert [item.kind for item in quick.annotations] == ["improvement", "improvement"]
+    assert [item.severity for item in quick.annotations] == ["high", "medium"]
+
+
 def test_deep_analysis_accepts_only_real_essay_evidence() -> None:
     payload = DeepAnalysisOutput(
         overall_analysis="在已有评分基础上，进一步关注环境描写和动作细节。",

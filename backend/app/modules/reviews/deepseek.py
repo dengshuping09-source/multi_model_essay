@@ -14,7 +14,7 @@ from app.modules.reviews.contracts import (
     parse_essay_review_output,
 )
 
-PROMPT_VERSION = "essay-review-v5-quick-focused-feedback"
+PROMPT_VERSION = "essay-review-v6-problem-first-feedback"
 QUICK_REVIEW_MAX_OUTPUT_TOKENS = 1_200
 
 
@@ -83,7 +83,7 @@ SYSTEM_PROMPT = """你是一位有经验的中小学语文老师。请独立、�
   ]
 }
 
-四个必填维度各出现一次。每项理由保持简短；每个维度最多一处原文依据；最多三条修改建议；最多两条最重要的原文定位反馈。引用必须从原文逐字复制。不要做全文逐句扫描、全文表达检查、润色、长示例或技术说明，也不要虚构原文没有的事实。若原文主要是中文，除 quote 原文引用外，所有说明、总评和建议都必须使用自然、简体中文。"""
+四个必填维度各出现一次。每项理由保持简短；每个维度最多一处原文依据；最多三条修改建议；最多两条最重要的原文定位反馈。引用必须从原文逐字复制。若存在真实、可定位的修改点，annotations 必须优先给 kind=improvement，并在 comment 与 suggestion 中说明问题、原因和可执行修改方向；strength 最多一条，不能挤占问题反馈。不要为了数量制造问题或把正常表达说成错误。不要做全文逐句扫描、全文表达检查、润色、长示例或技术说明，也不要虚构原文没有的事实。若原文主要是中文，除 quote 原文引用外，所有说明、总评和建议都必须使用自然、简体中文。"""
 
 
 class DeepSeekReviewClient:
