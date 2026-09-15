@@ -48,6 +48,10 @@ def recommend_materials(
     candidates: list[tuple[int, WritingMaterial, str, list[str]]] = []
 
     for material in materials:
+        # Draft or source-pending entries can still be inspected by maintainers,
+        # but must never be promoted as a student's default recommendation.
+        if material.quality_status != "verified":
+            continue
         score = 0
         reasons: list[str] = []
         sources: list[str] = []
@@ -95,12 +99,12 @@ def recommend_materials(
 
     candidates.sort(key=lambda item: (-item[0], item[1].title))
     selected: list[tuple[WritingMaterial, str, list[str]]] = []
-    used_categories: set[str] = set()
+    used_types: set[str] = set()
     for _, material, reason, sources in candidates:
-        if material.category in used_categories and len(selected) < 3:
+        if material.material_type in used_types and len(selected) < 3:
             continue
         selected.append((material, reason, sources))
-        used_categories.add(material.category)
+        used_types.add(material.material_type)
         if len(selected) == 4:
             break
     return selected

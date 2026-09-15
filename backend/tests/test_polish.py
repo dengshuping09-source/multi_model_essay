@@ -69,6 +69,25 @@ def test_validate_polish_rejects_untraceable_change() -> None:
         validate_polish(ORIGINAL, output)
 
 
+def test_validate_polish_discards_a_change_that_removes_a_paragraph() -> None:
+    original = "第一段保留中心观点，说明自己的经历。\n第二段保留具体事例，说明为什么要坚持。\n第三段保留结尾，回应题目。"
+    output = EssayPolishOutput(
+        polished_text="第一段保留中心观点，说明自己的经历。\n第二段。\n第三段保留结尾，回应题目。",
+        overview="大幅压缩中间内容。",
+        changes=[
+            PolishChange(
+                original="第二段保留具体事例，说明为什么要坚持。",
+                revised="第二段。",
+                reason="测试。",
+                category="structure",
+            )
+        ],
+    )
+
+    with pytest.raises(PolishResponseFormatError):
+        validate_polish(original, output)
+
+
 def test_validate_polish_keeps_traceable_changes_and_discards_an_imprecise_quote() -> None:
     output = EssayPolishOutput(
         polished_text="雨停了，我走进安静的巷子。地上的积水闪着微光，我慢慢走回家。",
@@ -106,6 +125,20 @@ def test_validate_polish_accepts_no_change_when_original_is_already_clear() -> N
 
     assert validated.polished_text == ORIGINAL
     assert validated.changes == []
+
+
+def test_validate_polish_recovers_bounded_changes_when_provider_omits_them() -> None:
+    output = EssayPolishOutput(
+        polished_text="雨停了，我走进安静的巷子。地上的水很亮，我慢慢走回家。",
+        overview="补充了环境特点。",
+        changes=[],
+    )
+
+    validated = validate_polish(ORIGINAL, output)
+
+    assert validated.polished_text == "雨停了，我走进安静的巷子。地上的水很亮，我慢慢走回家。"
+    assert len(validated.changes) == 1
+    assert "安静的巷子" in validated.changes[0].revised
 
 
 def test_validate_polish_rejects_english_student_copy_for_chinese_essay() -> None:

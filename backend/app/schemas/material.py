@@ -7,6 +7,9 @@ from pydantic import BaseModel, Field
 
 
 MaterialCategory = Literal["人物", "事件", "历史", "科技", "文化", "社会", "青春成长"]
+MaterialType = Literal["人物素材", "事件素材", "历史文化", "科技创新", "社会生活", "名人名言", "成语典故"]
+MaterialSourceKind = Literal["公共事实", "生活观察", "经典原文", "古籍典故"]
+MaterialQualityStatus = Literal["verified", "needs_review"]
 
 
 class MaterialReference(BaseModel):
@@ -23,7 +26,8 @@ class WritingMaterial(BaseModel):
     id: str
     title: str
     category: MaterialCategory
-    source_kind: Literal["公共事实", "生活观察"]
+    material_type: MaterialType = "社会生活"
+    source_kind: MaterialSourceKind
     background: str
     core_facts: list[str] = Field(min_length=1, max_length=4)
     themes: list[str] = Field(min_length=1, max_length=6)
@@ -33,6 +37,15 @@ class WritingMaterial(BaseModel):
     example_use: str
     fact_check_note: str
     reference_links: list[MaterialReference] = Field(default_factory=list, max_length=3)
+    # Type-specific context lives on the same material entity so favorites,
+    # recent views, search, and recommendation never need separate systems.
+    quote_text: str | None = Field(default=None, max_length=180)
+    attribution: str | None = Field(default=None, max_length=120)
+    origin: str | None = Field(default=None, max_length=160)
+    idiom_meaning: str | None = Field(default=None, max_length=240)
+    idiom_story: str | None = Field(default=None, max_length=700)
+    quality_status: MaterialQualityStatus = "verified"
+    verification_note: str | None = Field(default=None, max_length=300)
     is_favorited: bool = False
 
 

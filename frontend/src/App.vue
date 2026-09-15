@@ -263,12 +263,14 @@ interface TopicTrainingSession {
   updated_at: string
 }
 type MaterialCategory = '人物' | '事件' | '历史' | '科技' | '文化' | '社会' | '青春成长'
+type MaterialType = '人物素材' | '事件素材' | '历史文化' | '科技创新' | '社会生活' | '名人名言' | '成语典故'
 interface MaterialReference { title: string; publisher: string; url: string }
 interface WritingMaterial {
   id: string
   title: string
   category: MaterialCategory
-  source_kind: '公共事实' | '生活观察'
+  material_type: MaterialType
+  source_kind: string
   background: string
   core_facts: string[]
   themes: string[]
@@ -278,6 +280,13 @@ interface WritingMaterial {
   example_use: string
   fact_check_note: string
   reference_links?: MaterialReference[]
+  quote_text?: string | null
+  attribution?: string | null
+  origin?: string | null
+  idiom_meaning?: string | null
+  idiom_story?: string | null
+  quality_status?: 'verified' | 'needs_review'
+  verification_note?: string | null
   is_favorited: boolean
 }
 interface MaterialRecommendation {
@@ -451,13 +460,13 @@ const recommendationsPersonalized = ref(false)
 const evaluatedTrainingWorkCount = ref(0)
 const isLoadingRecommendations = ref(false)
 const recommendationError = ref('')
-const materialCategories: MaterialCategory[] = ['人物', '事件', '历史', '科技', '文化', '社会', '青春成长']
+const materialTypes: MaterialType[] = ['人物素材', '事件素材', '历史文化', '科技创新', '社会生活', '名人名言', '成语典故']
 const materialThemeOptions = ['坚持', '责任', '创新', '合作', '成长', '文化传承', '人与自然']
 const materials = ref<WritingMaterial[]>([])
 const selectedMaterial = ref<WritingMaterial | null>(null)
 const materialRecommendations = ref<MaterialRecommendation[]>([])
 const materialSearchQuery = ref('')
-const materialCategory = ref<MaterialCategory | ''>('')
+const materialType = ref<MaterialType | ''>('')
 const materialTheme = ref('')
 const materialLibraryScope = ref<'all' | 'favorites' | 'recent'>('all')
 const materialLastViewedAt = ref<Record<string, string>>({})
@@ -881,6 +890,15 @@ const polishOriginalSegments = computed<PolishTextSegment[]>(() =>
 const polishRevisedSegments = computed<PolishTextSegment[]>(() =>
   buildPolishSegments(polishResult.value?.polished_text ?? '', polishResult.value?.changes ?? [], 'revised'),
 )
+const polishTextSource = computed<'direct_input' | 'ocr_corrected'>(() =>
+  polishResult.value?.text_source === 'ocr_corrected' ? 'ocr_corrected' : 'direct_input',
+)
+const displayedPolishOriginalSegments = computed<PolishTextSegment[]>(() =>
+  formatPolishReadingLines(polishOriginalSegments.value, polishTextSource.value),
+)
+const displayedPolishRevisedSegments = computed<PolishTextSegment[]>(() =>
+  formatPolishReadingLines(polishRevisedSegments.value, polishTextSource.value),
+)
 const currentRevisionImprovement = computed(() => {
   if (versionComparison.value?.score_change !== null && versionComparison.value?.score_change !== undefined) {
     return Math.round(versionComparison.value.score_change * 10) / 10
@@ -1069,22 +1087,22 @@ function deduplicateReportAnnotations(annotations: ReviewAnnotationDetail[], tex
  * reader width. This function changes only the rendered segments, so review
  * offsets and OCR block mappings still point at the original saved text.
  */
-function formatEssayReadingLines(
-  segments: AnnotatedTextSegment[],
+function formatReadingTextSegments<T>(
+  segments: Array<{ text: string; payload: T }>,
   textSource: 'direct_input' | 'ocr_corrected',
-): AnnotatedTextSegment[] {
+  emptyPayload: T,
+  payloadKey: (payload: T) => string,
+): Array<{ text: string; payload: T }> {
   const units = segments.flatMap((segment) =>
-    [...segment.text].map((character) => ({ character, annotations: segment.annotations })),
+    [...segment.text].map((character) => ({ character, payload: segment.payload })),
   )
-  const normalized: AnnotatedTextSegment[] = []
+  const normalized: Array<{ text: string; payload: T }> = []
 
-  const append = (text: string, annotations: ReviewAnnotationDetail[]) => {
+  const append = (text: string, payload: T) => {
     if (!text) return
     const previous = normalized[normalized.length - 1]
-    const previousIds = previous?.annotations.map((annotation) => annotation.id).join(',')
-    const annotationIds = annotations.map((annotation) => annotation.id).join(',')
-    if (previous && previousIds === annotationIds) previous.text += text
-    else normalized.push({ text, annotations })
+    if (previous && payloadKey(previous.payload) === payloadKey(payload)) previous.text += text
+    else normalized.push({ text, payload })
   }
 
   const isLineBreak = (character: string | undefined): boolean => character === '\r' || character === '\n'
@@ -1114,7 +1132,7 @@ function formatEssayReadingLines(
   while (index < units.length) {
     const unit = units[index]!
     if (!isLineBreak(unit.character)) {
-      append(unit.character, unit.annotations)
+      append(unit.character, unit.payload)
       index += 1
       continue
     }
@@ -1142,7 +1160,7 @@ function formatEssayReadingLines(
     }
 
     if (lineBreakCount >= 2) {
-      append('\n\n', [])
+      append('\n\n', emptyPayload)
       continue
     }
 
@@ -1152,17 +1170,46 @@ function formatEssayReadingLines(
     // paragraph. OCR rows do not: unless a blank line, indent, or structural
     // marker says otherwise, let the browser wrap those rows naturally.
     if (hasParagraphMarker(previousLine, nextLine)) {
-      append('\n', [])
+      append('\n', emptyPayload)
       continue
     }
 
     const previousCharacter = previousLine.at(-1) ?? ''
     const nextCharacter = units[index]?.character ?? ''
-    if (/[A-Za-z0-9]/.test(previousCharacter) && /[A-Za-z0-9]/.test(nextCharacter)) append(' ', [])
+    if (/[A-Za-z0-9]/.test(previousCharacter) && /[A-Za-z0-9]/.test(nextCharacter)) append(' ', emptyPayload)
 
   }
 
   return normalized
+}
+
+function formatEssayReadingLines(
+  segments: AnnotatedTextSegment[],
+  textSource: 'direct_input' | 'ocr_corrected',
+): AnnotatedTextSegment[] {
+  return formatReadingTextSegments(
+    segments.map((segment) => ({ text: segment.text, payload: segment.annotations })),
+    textSource,
+    [],
+    (annotations) => annotations.map((annotation) => annotation.id).join(','),
+  ).map((segment) => ({ text: segment.text, annotations: segment.payload }))
+}
+
+/**
+ * The reference draft is rendered with the same paragraph-aware rules as the
+ * original reader. This is display-only: saved text and review offsets remain
+ * unchanged, while OCR visual rows can use the available reading width.
+ */
+function formatPolishReadingLines(
+  segments: PolishTextSegment[],
+  textSource: 'direct_input' | 'ocr_corrected',
+): PolishTextSegment[] {
+  return formatReadingTextSegments(
+    segments.map((segment) => ({ text: segment.text, payload: { changed: segment.changed, changeIndex: segment.changeIndex } })),
+    textSource,
+    { changed: false, changeIndex: null },
+    (payload) => `${payload.changed}:${payload.changeIndex ?? ''}`,
+  ).map((segment) => ({ text: segment.text, changed: segment.payload.changed, changeIndex: segment.payload.changeIndex }))
 }
 
 function buildPolishSegments(
@@ -1838,7 +1885,7 @@ async function loadMaterials(): Promise<void> {
   try {
     const params = new URLSearchParams()
     if (materialSearchQuery.value.trim()) params.set('query', materialSearchQuery.value.trim())
-    if (materialCategory.value) params.set('category', materialCategory.value)
+    if (materialType.value) params.set('material_type', materialType.value)
     if (materialTheme.value) params.set('theme', materialTheme.value)
     if (materialLibraryScope.value === 'favorites') params.set('favorites_only', 'true')
     const suffix = params.size ? `?${params.toString()}` : ''
@@ -3920,7 +3967,7 @@ onBeforeUnmount(() => {
           <div v-else class="material-recommendation-list">
             <article v-for="item in materialRecommendations" :key="item.material.id">
               <button class="material-recommendation-main" type="button" @click="selectMaterial(item.material)">
-                <span>{{ item.material.category }}</span><strong>{{ item.material.title }}</strong><p>{{ item.reason }}</p><small v-if="item.sources.length">依据：{{ item.sources.join('、') }}</small>
+                <span>{{ item.material.material_type }}</span><strong>{{ item.material.title }}</strong><p>{{ item.reason }}</p><small v-if="item.sources.length">依据：{{ item.sources.join('、') }}</small>
               </button>
               <button class="material-heart" type="button" :aria-label="item.material.is_favorited ? `取消收藏${item.material.title}` : `收藏${item.material.title}`" :disabled="pendingMaterialFavoriteId === item.material.id" @click="void toggleMaterialFavorite(item.material)"><Heart :size="18" :fill="item.material.is_favorited ? 'currentColor' : 'none'" /></button>
             </article>
@@ -3931,8 +3978,8 @@ onBeforeUnmount(() => {
         <section class="library-browser" aria-labelledby="library-browser-title">
           <div class="material-section-heading"><div><p class="eyebrow">浏览素材</p><h2 id="library-browser-title">按主题慢慢挑选</h2></div><div class="material-library-scopes" role="group" aria-label="素材范围"><button class="text-button" type="button" :class="{ active: materialLibraryScope === 'all' }" @click="switchMaterialLibraryScope('all')">全部素材</button><button v-if="currentUser" class="text-button" type="button" :class="{ active: materialLibraryScope === 'favorites' }" @click="switchMaterialLibraryScope('favorites')"><Heart :size="16" :fill="materialLibraryScope === 'favorites' ? 'currentColor' : 'none'" />我的收藏</button><button class="text-button" type="button" :class="{ active: materialLibraryScope === 'recent' }" @click="switchMaterialLibraryScope('recent')">最近浏览</button></div></div>
           <div v-if="materialLibraryScope !== 'recent'" class="library-filters">
-            <form class="library-search" role="search" @submit.prevent="void loadMaterials()"><Search :size="18" /><input v-model="materialSearchQuery" type="search" maxlength="120" placeholder="搜索人物、主题或关键词" /><button v-if="materialSearchQuery" type="button" aria-label="清除搜索" @click="materialSearchQuery = ''; void loadMaterials()"><X :size="15" /></button><button class="library-search-submit" type="submit">搜索</button></form>
-            <div class="material-filter-row"><span>按类型</span><div class="material-category-filters" role="group" aria-label="素材分类"><button type="button" :class="{ active: !materialCategory }" @click="materialCategory = ''; void loadMaterials()">全部</button><button v-for="category in materialCategories" :key="category" type="button" :class="{ active: materialCategory === category }" @click="materialCategory = category; void loadMaterials()">{{ category }}</button></div></div>
+            <form class="library-search" role="search" @submit.prevent="void loadMaterials()"><Search :size="18" /><input v-model="materialSearchQuery" type="search" maxlength="120" placeholder="搜索人物、成语、名言或主题" /><button v-if="materialSearchQuery" type="button" aria-label="清除搜索" @click="materialSearchQuery = ''; void loadMaterials()"><X :size="15" /></button><button class="library-search-submit" type="submit">搜索</button></form>
+            <div class="material-filter-row"><span>按类型</span><div class="material-category-filters" role="group" aria-label="素材类型"><button type="button" :class="{ active: !materialType }" @click="materialType = ''; void loadMaterials()">全部</button><button v-for="type in materialTypes" :key="type" type="button" :class="{ active: materialType === type }" @click="materialType = type; void loadMaterials()">{{ type }}</button></div></div>
             <div class="material-filter-row"><span>常用主题</span><div class="material-category-filters" role="group" aria-label="素材主题"><button type="button" :class="{ active: !materialTheme }" @click="materialTheme = ''; void loadMaterials()">不限</button><button v-for="theme in materialThemeOptions" :key="theme" type="button" :class="{ active: materialTheme === theme }" @click="materialTheme = theme; void loadMaterials()">{{ theme }}</button></div></div>
           </div>
           <p v-if="materialError" class="training-error" role="alert"><CircleAlert :size="17" />{{ materialError }} <button type="button" @click="void loadMaterials()">重新尝试</button></p>
@@ -3940,19 +3987,21 @@ onBeforeUnmount(() => {
           <div v-else-if="materials.length" class="library-content">
             <div class="material-list" role="list">
               <article v-for="material in materials" :key="material.id" :class="{ active: selectedMaterial?.id === material.id }" role="listitem">
-                <button class="material-list-main" type="button" @click="selectMaterial(material)"><span>{{ material.category }}</span><strong>{{ material.title }}</strong><p>{{ material.background }}</p><small>{{ material.themes.slice(0, 3).join(' · ') }}</small><em v-if="materialLibraryScope === 'recent'">{{ formatMaterialLastViewed(materialLastViewedAt[material.id]) }}</em></button>
+                <button class="material-list-main" type="button" @click="selectMaterial(material)"><span>{{ material.material_type }}</span><strong>{{ material.title }}</strong><p>{{ material.background }}</p><small>{{ material.themes.slice(0, 3).join(' · ') }}</small><em v-if="materialLibraryScope === 'recent'">{{ formatMaterialLastViewed(materialLastViewedAt[material.id]) }}</em></button>
                 <button class="material-heart" type="button" :aria-label="material.is_favorited ? `取消收藏${material.title}` : `收藏${material.title}`" :disabled="pendingMaterialFavoriteId === material.id" @click="void toggleMaterialFavorite(material)"><Heart :size="18" :fill="material.is_favorited ? 'currentColor' : 'none'" /></button>
               </article>
             </div>
             <article v-if="selectedMaterial" ref="materialDetailRef" class="material-detail" aria-live="polite">
-              <header><div><span>{{ selectedMaterial.category }} · {{ selectedMaterial.source_kind }}</span><h2>{{ selectedMaterial.title }}</h2><p>{{ selectedMaterial.background }}</p></div><button class="material-heart" type="button" :aria-label="selectedMaterial.is_favorited ? `取消收藏${selectedMaterial.title}` : `收藏${selectedMaterial.title}`" :disabled="pendingMaterialFavoriteId === selectedMaterial.id" @click="void toggleMaterialFavorite(selectedMaterial)"><Heart :size="19" :fill="selectedMaterial.is_favorited ? 'currentColor' : 'none'" /></button></header>
+              <header><div><span>{{ selectedMaterial.material_type }} · {{ selectedMaterial.source_kind }}<b v-if="selectedMaterial.quality_status === 'verified'">已核验</b></span><h2>{{ selectedMaterial.title }}</h2><p>{{ selectedMaterial.background }}</p></div><button class="material-heart" type="button" :aria-label="selectedMaterial.is_favorited ? `取消收藏${selectedMaterial.title}` : `收藏${selectedMaterial.title}`" :disabled="pendingMaterialFavoriteId === selectedMaterial.id" @click="void toggleMaterialFavorite(selectedMaterial)"><Heart :size="19" :fill="selectedMaterial.is_favorited ? 'currentColor' : 'none'" /></button></header>
               <section class="material-theme-section"><h3>适用主题</h3><ul class="material-theme-list"><li v-for="theme in selectedMaterial.themes" :key="theme">{{ theme }}</li></ul></section>
-              <section><h3>核心事实</h3><ul><li v-for="fact in selectedMaterial.core_facts" :key="fact">{{ fact }}</li></ul></section>
+              <section v-if="selectedMaterial.quote_text" class="material-classic-context"><h3>原句与出处</h3><blockquote>{{ selectedMaterial.quote_text }}</blockquote><p><strong v-if="selectedMaterial.attribution">{{ selectedMaterial.attribution }}</strong><span v-if="selectedMaterial.attribution && selectedMaterial.origin"> · </span><span v-if="selectedMaterial.origin">{{ selectedMaterial.origin }}</span></p></section>
+              <section v-if="selectedMaterial.idiom_meaning" class="material-classic-context"><h3>成语含义</h3><p>{{ selectedMaterial.idiom_meaning }}</p><h3 v-if="selectedMaterial.idiom_story">典故简述</h3><p v-if="selectedMaterial.idiom_story">{{ selectedMaterial.idiom_story }}</p></section>
+              <section><h3>{{ selectedMaterial.quote_text || selectedMaterial.idiom_meaning ? '内容说明' : '核心事实' }}</h3><ul><li v-for="fact in selectedMaterial.core_facts" :key="fact">{{ fact }}</li></ul></section>
               <section><h3>适合论证什么</h3><ul><li v-for="claim in selectedMaterial.supports_claims" :key="claim">{{ claim }}</li></ul></section>
-              <section class="material-writing-example"><h3>写作转化示例</h3><dl><div><dt>素材事实</dt><dd>{{ selectedMaterial.core_facts[0] }}</dd></div><div><dt>论证角度</dt><dd>{{ selectedMaterial.supports_claims[0] }}</dd></div></dl><blockquote>{{ selectedMaterial.example_use }}</blockquote><p>示例用于学习表达思路，建议结合自己的文章重新组织。</p></section>
+              <section class="material-writing-example"><h3>写作转化示例</h3><dl><div><dt>{{ selectedMaterial.quote_text ? '原句' : selectedMaterial.idiom_story ? '典故要点' : '素材事实' }}</dt><dd>{{ selectedMaterial.quote_text || selectedMaterial.idiom_story || selectedMaterial.core_facts[0] }}</dd></div><div><dt>论证角度</dt><dd>{{ selectedMaterial.supports_claims[0] }}</dd></div></dl><blockquote>{{ selectedMaterial.example_use }}</blockquote><p>示例用于学习表达思路，建议结合自己的文章重新组织。</p></section>
               <section class="material-guidance"><div><h3>适合怎样使用</h3><p>{{ selectedMaterial.how_to_use }}</p></div><div><h3>使用提醒</h3><p>{{ selectedMaterial.common_misuse }}</p></div></section>
               <section v-if="selectedMaterial.reference_links?.length" class="material-references"><h3>资料来源与延伸阅读</h3><ul><li v-for="reference in selectedMaterial.reference_links" :key="reference.url"><a :href="reference.url" target="_blank" rel="noopener noreferrer"><strong>{{ reference.title }}</strong><span>{{ reference.publisher }} · 打开资料</span></a></li></ul></section>
-              <footer><CircleAlert :size="16" /><span><strong>核实提醒：</strong>{{ selectedMaterial.fact_check_note }}</span></footer>
+              <footer><CircleAlert :size="16" /><span><strong>{{ selectedMaterial.quality_status === 'verified' ? '核验说明：' : '核实提醒：' }}</strong>{{ selectedMaterial.verification_note || selectedMaterial.fact_check_note }}</span></footer>
             </article>
           </div>
           <div v-else class="library-empty"><BookOpen :size="26" /><div><strong>{{ materialLibraryScope === 'favorites' ? '还没有收藏素材' : materialLibraryScope === 'recent' ? '还没有最近浏览的素材' : '没有找到相关素材' }}</strong><p>{{ materialLibraryScope === 'favorites' ? '看到适合自己观点的材料时，可以点爱心收藏。' : materialLibraryScope === 'recent' ? '打开一条素材详情后，它会出现在这里，方便你下次继续查看。' : '换个关键词或分类试试；素材应服务你的观点，而不是凑名人故事。' }}</p></div><button v-if="materialLibraryScope !== 'all'" class="secondary-button" type="button" @click="switchMaterialLibraryScope('all')">浏览全部素材</button></div>
@@ -4151,7 +4200,7 @@ onBeforeUnmount(() => {
 
         <nav v-if="reviewBatch?.final_evaluation" class="report-reading-nav" aria-label="报告快速导航">
           <span>建议先看</span>
-          <a href="#overall-feedback-title">完整总评</a>
+          <a href="#performance-title">综合结果</a>
           <a v-if="reportAnnotations.length || !isLegacyReport" :href="reportAnnotations.length ? '#annotation-title' : '#deep-analysis-entry-title'">{{ deepAnalysisStatus === 'completed' ? '逐句旁批' : '原文反馈' }}</a>
           <a v-if="reportSuggestions.length" href="#priority-title">修改建议</a>
           <button class="primary-button" type="button" @click="reviseEssay()"><Edit3 :size="16" />修改作文</button>
@@ -4223,7 +4272,7 @@ onBeforeUnmount(() => {
                   <p>最值得先改</p>
                   <h3>{{ reportTopIssues[0]?.suggestion || (weakestDimension ? `优先改善${dimensionLabel(weakestDimension.dimension)}` : '从一处具体表达开始修改') }}</h3>
                   <span v-if="reportTopIssues[0]?.example_revision">{{ reportTopIssues[0].example_revision }}</span>
-                  <span v-else>结合下方完整总评，先完成一处清楚、具体的修改。</span>
+                  <span v-else>结合下方原文反馈，先完成一处清楚、具体的修改。</span>
                 </div>
               </div>
             </section>
@@ -4290,8 +4339,8 @@ onBeforeUnmount(() => {
           </div>
         </details>
 
-        <section v-if="reviewBatch?.final_evaluation" class="overall-feedback" aria-labelledby="overall-feedback-title">
-          <div class="report-section-heading"><div><p class="eyebrow">总评</p><h2 id="overall-feedback-title">这篇作文的整体表现</h2></div></div>
+        <section v-if="reportDeepAnalysis?.status === 'completed' && reportDeepAnalysis.overall_analysis?.trim() && reportDeepAnalysis.overall_analysis.trim() !== (reviewBatch?.final_evaluation?.summary ?? '').trim()" class="overall-feedback overall-feedback--detail" aria-labelledby="overall-feedback-title">
+          <div class="report-section-heading"><div><p class="eyebrow">深入说明</p><h2 id="overall-feedback-title">从整体看，接下来可以怎么改</h2></div></div>
           <div class="overall-summary"><span><Sparkles :size="22" /></span><p>{{ reportDetailedSummary }}</p></div>
         </section>
 
@@ -4341,16 +4390,22 @@ onBeforeUnmount(() => {
           <div class="annotation-workspace annotation-workspace--feedback-only">
             <aside class="annotation-sidebar" aria-label="逐句旁批列表与详情">
               <template v-if="selectedReportAnnotation">
-                <nav class="annotation-directory" aria-label="全部逐句旁批">
-                  <div class="annotation-directory-heading"><strong>{{ deepAnalysisStatus === 'completed' ? '逐句旁批' : '核心原文反馈' }}</strong><span>共 {{ reportAnnotations.length }} 条</span></div>
-                  <ol class="annotation-directory-list"><li v-for="(annotation, index) in reportAnnotations" :key="annotation.id"><button type="button" :class="[`direction-${reportAnnotationDirection(annotation)}`, { active: selectedReportAnnotation.id === annotation.id }]" :data-report-directory-id="annotation.id" :aria-current="selectedReportAnnotation.id === annotation.id ? 'true' : undefined" @click="selectReportAnnotation(annotation, 'directory')"><span class="annotation-directory-number">{{ index + 1 }}</span><span class="annotation-directory-copy"><small>{{ reportAnnotationDirectionLabel(annotation) }} · {{ annotationTypeLabel(annotation) }}</small><strong>“{{ annotationPreview(annotation) }}”</strong></span><ChevronRight :size="15" aria-hidden="true" /></button></li></ol>
-                </nav>
-                <article class="annotation-teacher-note" :class="`direction-${reportAnnotationDirection(selectedReportAnnotation)}`" aria-live="polite">
-                  <div class="annotation-note-heading"><span>{{ reportAnnotationDirectionLabel(selectedReportAnnotation) }}</span><small>{{ annotationTypeLabel(selectedReportAnnotation) }} · 第 {{ reportAnnotations.findIndex((annotation) => annotation.id === selectedReportAnnotation.id) + 1 }} 条</small></div>
-                  <dl class="annotation-detail"><div><dt>原句</dt><dd>“{{ selectedReportAnnotation.evidence_text || '对应原文' }}”</dd></div><div><dt>{{ selectedReportAnnotation.kind === 'strength' ? '好在哪里' : '这里怎么看' }}</dt><dd>{{ selectedReportAnnotation.comment }}</dd></div><div v-if="selectedReportAnnotation.suggestion"><dt>{{ selectedReportAnnotation.kind === 'strength' ? '为什么值得保留' : '可以怎么改' }}</dt><dd>{{ selectedReportAnnotation.suggestion }}</dd></div></dl>
-                  <p v-if="!canLocateReportAnnotation(selectedReportAnnotation)" class="annotation-location-note">这条反馈暂未能精确标记到原文位置，请结合上方原句查看。</p>
-                  <button v-if="selectedReportAnnotation.ocr_block_id" class="secondary-button annotation-source-button" type="button" @click="void openAnnotation(selectedReportAnnotation)"><Images :size="16" />查看手写原稿位置</button>
-                </article>
+                <ol class="annotation-feedback-list" aria-label="全部逐句旁批">
+                  <li v-for="(annotation, index) in reportAnnotations" :key="annotation.id">
+                    <button type="button" :class="[`direction-${reportAnnotationDirection(annotation)}`, { active: selectedReportAnnotation.id === annotation.id }]" :data-report-directory-id="annotation.id" :aria-current="selectedReportAnnotation.id === annotation.id ? 'true' : undefined" @click="selectReportAnnotation(annotation, 'directory')">
+                      <span class="annotation-feedback-number">{{ index + 1 }}</span>
+                      <span class="annotation-feedback-copy">
+                        <span class="annotation-feedback-heading"><small>{{ reportAnnotationDirectionLabel(annotation) }} · {{ annotationTypeLabel(annotation) }}</small><ChevronRight :size="16" aria-hidden="true" /></span>
+                        <strong>{{ annotation.kind === 'strength' ? '这处表达值得保留' : '这处表达需要关注' }}</strong>
+                        <span class="annotation-feedback-evidence"><b>原文</b>“{{ annotation.evidence_text || annotationPreview(annotation) }}”</span>
+                        <span class="annotation-feedback-explanation"><b>{{ annotation.kind === 'strength' ? '好在哪里' : '问题' }}</b>{{ annotation.comment }}</span>
+                        <span v-if="annotation.suggestion" class="annotation-feedback-suggestion"><b>{{ annotation.kind === 'strength' ? '为什么值得保留' : '建议' }}</b>{{ annotation.suggestion }}</span>
+                        <span v-if="!canLocateReportAnnotation(annotation)" class="annotation-location-note">暂未能精确标记到原文位置，请结合原句查看。</span>
+                      </span>
+                    </button>
+                    <button v-if="annotation.ocr_block_id && selectedReportAnnotation.id === annotation.id" class="secondary-button annotation-source-button" type="button" @click="void openAnnotation(annotation)"><Images :size="16" />查看手写原稿位置</button>
+                  </li>
+                </ol>
               </template>
               <div v-else class="annotation-empty"><CheckCircle2 :size="25" /><strong>本篇没有逐句旁批</strong><p>可以重点查看总评和做得好的地方，保留这篇作文中的有效表达。</p></div>
             </aside>
@@ -4358,18 +4413,18 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-if="reviewBatch?.final_evaluation" class="polish-learning" aria-labelledby="polish-title">
-          <div class="report-section-heading"><div><p class="eyebrow">作文润色</p><h2 id="polish-title">保留你的作文，只把表达变得更好</h2><p>润色不会覆盖原稿，也不会替你重新写一篇作文。每一处修改都会说明原因。</p></div><button v-if="!polishResult" class="primary-button" type="button" :disabled="isPolishing" :aria-busy="isPolishing" @click="void requestPolish()"><LoaderCircle v-if="isPolishing" :size="17" class="spin" /><Sparkles v-else :size="17" />{{ isPolishing ? '正在逐句润色' : '生成润色对照' }}</button></div>
+          <div class="report-section-heading"><div><p class="eyebrow">作文润色</p><h2 id="polish-title">保留你的作文，只把表达变得更好</h2><p>这是一份学习参考：不会覆盖原稿、自动生成新分数，也不会进入成长记录。你确认并修改后，再评才会形成新版本。</p></div><button v-if="!polishResult" class="primary-button" type="button" :disabled="isPolishing" :aria-busy="isPolishing" @click="void requestPolish()"><LoaderCircle v-if="isPolishing" :size="17" class="spin" /><Sparkles v-else :size="17" />{{ isPolishing ? '正在逐句润色' : '生成润色对照' }}</button></div>
           <div v-if="isPolishing" class="polish-loading" role="status"><span><LoaderCircle :size="24" class="spin" /></span><div><strong>正在保留原意，逐句改善表达</strong><p>会结合本次总评和优先建议，生成可对照的修改稿。</p></div></div>
           <p v-else-if="polishErrorMessage" class="review-error">{{ polishErrorMessage }} <button type="button" @click="void requestPolish()">重试</button></p>
           <div v-else-if="polishResult" class="polish-result">
             <div class="polish-overview"><CheckCircle2 :size="20" /><div><strong>本次润色重点</strong><p>{{ polishResult.overview }}</p></div><button class="text-button" type="button" @click="void requestPolish(true)">重新生成</button></div>
             <div class="polish-view-switch" role="group" aria-label="润色稿查看方式"><button type="button" :class="{ active: polishViewMode === 'compare' }" @click="polishViewMode = 'compare'">原文对照</button><button type="button" :class="{ active: polishViewMode === 'polished' }" @click="polishViewMode = 'polished'">只看润色稿</button></div>
             <div class="polish-text-comparison" :class="{ single: polishViewMode === 'polished' }">
-              <article v-if="polishViewMode === 'compare'"><div><strong>原文</strong><span>原稿保持不变</span></div><p><template v-for="(segment, index) in polishOriginalSegments" :key="index"><mark v-if="segment.changed">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></p></article>
-              <article><div><strong>润色稿</strong><span>{{ polishResult.changes.length }} 处克制修改</span></div><p><template v-for="(segment, index) in polishRevisedSegments" :key="index"><mark v-if="segment.changed">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></p></article>
+              <article v-if="polishViewMode === 'compare'"><div><strong>原文</strong><span>原稿保持不变</span></div><p class="polish-reading-copy"><template v-for="(segment, index) in displayedPolishOriginalSegments" :key="index"><mark v-if="segment.changed">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></p></article>
+              <article><div><strong>润色稿</strong><span>{{ polishResult.changes.length }} 处克制修改</span></div><p class="polish-reading-copy"><template v-for="(segment, index) in displayedPolishRevisedSegments" :key="index"><mark v-if="segment.changed">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></p></article>
             </div>
             <ol class="polish-change-list"><li v-for="(change, index) in polishResult.changes" :key="`${change.original}-${index}`"><span>{{ index + 1 }}</span><div><small>{{ polishCategoryLabel(change.category) }}</small><dl><div><dt>原句</dt><dd><del>{{ change.original }}</del></dd></div><div><dt>参考修改</dt><dd><ins>{{ change.revised }}</ins></dd></div><div><dt>修改原因</dt><dd>{{ change.reason }}</dd></div></dl></div></li></ol>
-            <div class="polish-continue"><div><strong>觉得这些修改合适？</strong><p>带着润色稿进入修改页，你仍然可以继续调整自己的表达。</p></div><button class="primary-button" type="button" @click="continueWithPolishedText"><Edit3 :size="17" />用润色稿继续修改</button></div>
+            <div class="polish-continue"><div><strong>觉得这些修改合适？</strong><p>把它带入修改页后，你仍然可以逐句调整；只有你提交修改稿并完成再评，才会形成正式新版本和新分数。</p></div><button class="primary-button" type="button" @click="continueWithPolishedText"><Edit3 :size="17" />带入修改页继续调整</button></div>
           </div>
           <div v-else class="polish-intro"><span><Sparkles :size="28" /></span><div><strong>润色会做什么</strong><p>改善用词、句子衔接和表达清晰度，同时保留你的内容、结构和写作语气。</p></div></div>
         </section>

@@ -23,6 +23,13 @@ TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 def test_material_search_and_explainable_recommendation_are_catalog_based() -> None:
     assert any(item.id == "sima-qian-shiji" for item in search_materials(query="坚持"))
     assert any(item.id == "tu-youyou-artemisinin" for item in search_materials(query="科研精神"))
+    assert [item.id for item in search_materials(query="千里之行")] == ["quote-qian-li-zhi-xing", "quote-bu-ji-kui-bu"]
+    assert [item.id for item in search_materials(query="愚公移山")] == ["idiom-yu-gong-yi-shan"]
+    assert {item.material_type for item in search_materials(query="责任")} >= {"人物素材", "事件素材", "社会生活"}
+    assert {item.material_type for item in search_materials(query="创新")} >= {"科技创新", "名人名言", "成语典故"}
+    assert [item.id for item in search_materials(query="屠呦呦")] == ["tu-youyou-artemisinin"]
+    assert all(item.material_type == "名人名言" for item in search_materials(material_type="名人名言"))
+    assert all(item.material_type == "成语典故" for item in search_materials(material_type="成语典故"))
     assert all("坚持" in item.themes for item in search_materials(theme="坚持"))
     assert [item.id for item in search_materials(category="科技")] == ["beidou-navigation"]
     recommendations = recommend_materials(
@@ -34,7 +41,7 @@ def test_material_search_and_explainable_recommendation_are_catalog_based() -> N
     assert recommendations
     assert any("题目" in sources for _, _, sources in recommendations)
     assert any("当前反馈" in sources for _, _, sources in recommendations)
-    assert all(material.source_kind in {"公共事实", "生活观察"} for material, _, _ in recommendations)
+    assert all(material.quality_status == "verified" for material, _, _ in recommendations)
     assert any("论证角度" in reason for _, reason, sources in recommendations if "立意" in sources)
 
 
@@ -58,6 +65,14 @@ def test_material_details_are_curated_and_legacy_reference_field_is_optional() -
         for reference in item.reference_links
     )
     assert search_materials(query="整理校园图书角")[0].reference_links == []
+
+    quotes = search_materials(material_type="名人名言")
+    idioms = search_materials(material_type="成语典故")
+    assert len(quotes) == 10
+    assert len(idioms) == 10
+    assert all(item.quality_status == "verified" and item.quote_text and item.origin for item in quotes)
+    assert all(item.quality_status == "verified" and item.idiom_meaning and item.idiom_story for item in idioms)
+    assert all(item.reference_links[0].url == "https://ctext.org/" for item in [*quotes, *idioms])
 
     legacy = WritingMaterial(
         id="legacy",
@@ -101,6 +116,14 @@ def test_browse_search_filter_favorite_and_context_recommendations() -> None:
                 assert category.status_code == 200
                 assert [item["id"] for item in category.json()["items"]] == ["beidou-navigation"]
 
+                quote_search = await client.get("/api/materials/", params={"query": "坚持"})
+                assert quote_search.status_code == 200
+                assert any(item["material_type"] == "名人名言" for item in quote_search.json()["items"])
+                idiom_search = await client.get("/api/materials/", params={"material_type": "成语典故"})
+                assert idiom_search.status_code == 200
+                assert len(idiom_search.json()["items"]) == 10
+                assert all(item["quality_status"] == "verified" for item in idiom_search.json()["items"])
+
                 theme = await client.get("/api/materials/", params={"theme": "坚持"})
                 assert theme.status_code == 200
                 assert theme.json()["items"]
@@ -110,6 +133,12 @@ def test_browse_search_filter_favorite_and_context_recommendations() -> None:
                 assert detail.status_code == 200
                 assert detail.json()["common_misuse"]
                 assert detail.json()["reference_links"][0]["url"].startswith("https://")
+                quote_detail = await client.get("/api/materials/quote-qian-li-zhi-xing")
+                assert quote_detail.status_code == 200
+                assert quote_detail.json()["quote_text"] == "千里之行，始于足下。"
+                idiom_detail = await client.get("/api/materials/idiom-yu-gong-yi-shan")
+                assert idiom_detail.status_code == 200
+                assert idiom_detail.json()["idiom_meaning"]
                 assert (await client.get("/api/materials/", params={"favorites_only": "true"})).status_code == 401
 
                 user_id = await authenticate_test_client(client)

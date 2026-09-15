@@ -21,6 +21,7 @@ from app.schemas.material import (
     MaterialRecentViewListResponse,
     MaterialRecommendation,
     MaterialRecommendationResponse,
+    MaterialType,
     WritingMaterial,
 )
 
@@ -72,6 +73,7 @@ async def _recurring_issue_labels(session: AsyncSession, user_id: object | None)
 async def list_materials(
     query: str | None = Query(default=None, max_length=120),
     category: MaterialCategory | None = None,
+    material_type: MaterialType | None = None,
     theme: str | None = Query(default=None, max_length=30),
     favorites_only: bool = False,
     user: OptionalCurrentUser = None,
@@ -82,7 +84,7 @@ async def list_materials(
     favorite_ids = await _favorite_ids(session, user.id if user else None)
     items = [
         _with_favorite(item, favorite_ids)
-        for item in search_materials(query=query, category=category, theme=theme)
+        for item in search_materials(query=query, category=category, material_type=material_type, theme=theme)
     ]
     if favorites_only:
         items = [item for item in items if item.is_favorited]

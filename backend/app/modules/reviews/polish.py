@@ -45,17 +45,18 @@ class PolishBackend:
     disable_thinking: bool = False
 
 
-POLISH_SYSTEM_PROMPT = """你是一位耐心的中小学语文老师。请在保留学生原意、事实、结构和个人语气的前提下，对作文做克制的表达润色。
+POLISH_SYSTEM_PROMPT = """你是一位耐心的中小学语文老师。请在保留学生原意、事实、结构、段落和个人语气的前提下，对作文做克制的表达润色。这是一份学习参考，不是重写作文，也不以提高分数为目标。
 
 必须遵守：
 1. 不新增原文没有的人物、事件、观点或事实。
 2. 不把作文重写成范文，只修改确实影响表达的词句、细节衔接和书写规范。
-3. 保留原文段落顺序，尽量控制修改数量。
-4. 每项修改都要引用原文中真实存在的连续片段，并给出修改后的对应片段和学生能理解的原因。
-5. 只返回一个 JSON 对象，不要输出 Markdown。
-6. 学生原文主要是中文时，除 original 原文引用和固定 JSON 枚举值外，所有内容都必须使用自然、简体中文。
-7. original 必须逐字复制自学生原文，revised 必须逐字出现在 polished_text 中；每个片段尽量不超过 120 个字，并按原文顺序列出。
-8. 如果原文确实无需修改，polished_text 原样返回，changes 返回空数组，不要为了凑数量制造修改。
+3. 保留原文的开头、结尾、中心、论据、段落顺序和自然段数量；不得删除、压缩或替换完整段落，不得改变文章结构。
+4. 每项修改都必须是局部的词句调整：不要跨自然段，每段原文片段尽量不超过 60 个汉字，并避免大幅增删内容。
+5. 每项修改都要引用原文中真实存在的连续片段，并给出修改后的对应片段和学生能理解的原因。
+6. 只返回一个 JSON 对象，不要输出 Markdown。
+7. 学生原文主要是中文时，除 original 原文引用和固定 JSON 枚举值外，所有内容都必须使用自然、简体中文。
+8. original 必须逐字复制自学生原文，revised 必须逐字出现在 polished_text 中，并按原文顺序列出。
+9. 如果原文确实无需修改，polished_text 原样返回，changes 返回空数组，不要为了凑数量制造修改。
 
 JSON 结构必须是：
 {
@@ -154,6 +155,69 @@ def _strip_code_fence(content: str) -> str:
     return normalized.strip()
 
 
+def _is_safe_traceable_change(change: PolishChange) -> bool:
+    """Keep reference edits local so they cannot silently rewrite an essay."""
+    original = change.original.strip()
+    revised = change.revised.strip()
+    if not original or not revised or original == revised:
+        return False
+    if len(original) > 80 or len(revised) > 110:
+        return False
+    # A local wording change must not add, remove, or merge natural paragraphs.
+    if original.count("\n") != revised.count("\n"):
+        return False
+
+    length_ratio = len(revised) / len(original)
+    if len(original) >= 12 and not 0.7 <= length_ratio <= 1.4:
+        return False
+    if len(original) >= 36 and not 0.8 <= length_ratio <= 1.25:
+        return False
+    if len(original) >= 18:
+        similarity = SequenceMatcher(None, original, revised, autojunk=False).ratio()
+        if similarity < (0.52 if len(original) >= 36 else 0.36):
+            return False
+    return True
+
+
+def _derive_traceable_changes(original: str, polished: str) -> list[PolishChange]:
+    """Recover small local edits when a provider omits its required change list.
+
+    The full provider draft remains untrusted: later validation rebuilds the
+    displayed text from the student's original and only these bounded replaces.
+    Insertions and deletions are intentionally ignored because they cannot be
+    mapped to one existing student excerpt without risking content drift.
+    """
+    derived: list[PolishChange] = []
+    matcher = SequenceMatcher(None, original, polished, autojunk=False)
+    for tag, original_start, original_end, revised_start, revised_end in matcher.get_opcodes():
+        if tag == "replace":
+            source_excerpt = original[original_start:original_end]
+            revised_excerpt = polished[revised_start:revised_end]
+        elif tag == "insert":
+            # Attach a short insertion to nearby source characters. This keeps
+            # the UI comparison explainable without accepting free-standing,
+            # unanchored additions.
+            source_start = max(0, original_start - 3)
+            source_end = min(len(original), original_start + 5)
+            source_excerpt = original[source_start:source_end]
+            revised_excerpt = (
+                original[source_start:original_start]
+                + polished[revised_start:revised_end]
+                + original[original_start:source_end]
+            )
+        else:
+            continue
+        change = PolishChange(
+            original=source_excerpt,
+            revised=revised_excerpt,
+            reason="这一处表达作了局部调整，建议结合全文语气判断是否采用。",
+            category="sentence" if len(source_excerpt) >= 12 else "wording",
+        )
+        if _is_safe_traceable_change(change):
+            derived.append(change)
+    return derived
+
+
 def validate_polish(original_text: str, output: EssayPolishOutput) -> EssayPolishOutput:
     try:
         output = ensure_chinese_polish_feedback(original_text, output)
@@ -163,13 +227,24 @@ def validate_polish(original_text: str, output: EssayPolishOutput) -> EssayPolis
     polished = output.polished_text.strip()
     length_ratio = len(polished) / max(len(original), 1)
     similarity = SequenceMatcher(None, original, polished, autojunk=False).ratio()
-    if not 0.6 <= length_ratio <= 1.5 or similarity < 0.42:
+    if not 0.7 <= length_ratio <= 1.35 or similarity < 0.52:
         raise PolishResponseFormatError("润色结果改动过大，已为你保留原文，请稍后重试")
 
     if not output.changes:
-        if polished != original:
-            raise PolishResponseFormatError("润色结果与原文无法可靠对照，请稍后重试")
-        return output.model_copy(update={"polished_text": original, "changes": []})
+        if polished == original:
+            return output.model_copy(update={"polished_text": original, "changes": []})
+        # Some providers return a coherent draft but omit changes despite the
+        # JSON contract. Recover only safe replace operations; never display
+        # their full untraceable rewrite.
+        output = output.model_copy(update={"changes": _derive_traceable_changes(original, polished)})
+        if not output.changes:
+            return output.model_copy(
+                update={
+                    "polished_text": original,
+                    "overview": "本次未生成可安全对照的局部修改，已保留原稿；你可以结合评测建议自行调整。",
+                    "changes": [],
+                }
+            )
 
     # Providers occasionally return one imprecise quote beside several useful,
     # fully traceable edits.  Rejecting the whole response makes the UI look
@@ -181,6 +256,8 @@ def validate_polish(original_text: str, output: EssayPolishOutput) -> EssayPolis
         if change.original in seen:
             continue
         seen.add(change.original)
+        if not _is_safe_traceable_change(change):
+            continue
         start = original.find(change.original)
         if start < 0 or change.revised not in polished:
             continue
