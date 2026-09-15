@@ -102,6 +102,18 @@ async def get_material_recommendations(
     recommendations = recommend_materials(
         search_materials(), topic=topic, idea=idea, issue=issue, recurring_issue_labels=recurring
     )
+    return MaterialRecommendationResponse(
+        items=[
+            MaterialRecommendation(
+                material=_with_favorite(material, favorite_ids),
+                reason=reason,
+                sources=sources,
+            )
+            for material, reason, sources in recommendations
+        ],
+        personalized=bool(recurring),
+        context_available=bool((topic or "").strip() or (idea or "").strip() or (issue or "").strip() or recurring),
+    )
 
 
 @router.get("/recent", response_model=MaterialRecentViewListResponse)
@@ -184,18 +196,6 @@ async def clear_recent_material_views(
     await session.execute(delete(MaterialRecentView).where(MaterialRecentView.author_id == user.id))
     await session.commit()
     return {"cleared": True}
-    return MaterialRecommendationResponse(
-        items=[
-            MaterialRecommendation(
-                material=_with_favorite(material, favorite_ids),
-                reason=reason,
-                sources=sources,
-            )
-            for material, reason, sources in recommendations
-        ],
-        personalized=bool(recurring),
-        context_available=bool((topic or "").strip() or (idea or "").strip() or (issue or "").strip() or recurring),
-    )
 
 
 @router.get("/{material_id}", response_model=WritingMaterial)
