@@ -1494,8 +1494,8 @@ h1, h2, h3 { text-wrap: balance; }
 .report-feedback-stream .supporting-suggestions { grid-template-columns: 1fr; }
 .report-feedback-stream .deep-analysis-entry { margin-top: 52px; }
 .report-feedback-stream .report-deep-dive { margin-top: 16px; }
-.annotation-workspace--feedback-only { grid-template-columns: minmax(0, 1fr); }
-.annotation-workspace--feedback-only .annotation-sidebar { position: static; }
+.annotation-workspace.annotation-workspace--feedback-only { display: block; margin-top: 30px; }
+.annotation-workspace.annotation-workspace--feedback-only .annotation-sidebar { position: static; width: 100%; max-width: none; }
 .annotation-feedback-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
 .annotation-feedback-list > li { min-width: 0; }
 .annotation-feedback-list > li > button:first-child { width: 100%; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 14px; align-items: start; padding: 21px 22px; color: var(--ink); text-align: left; background: #fff; border: 1px solid var(--line); border-radius: 17px; transition: border-color .18s ease, background .18s ease, box-shadow .18s ease; }

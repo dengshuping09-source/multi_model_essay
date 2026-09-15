@@ -985,6 +985,63 @@ const reviewProgressSteps = computed(() => {
 })
 const firstName = computed(() => currentUser.value?.display_name?.trim().split(/\s+/)[0] || '同学')
 
+const annotationSearchPunctuation: Record<string, string> = {
+  '，': ',',
+  '、': ',',
+  '。': '.',
+  '！': '!',
+  '？': '?',
+  '：': ':',
+  '；': ';',
+  '（': '(',
+  '）': ')',
+  '【': '[',
+  '】': ']',
+  '“': '"',
+  '”': '"',
+  '‘': "'",
+  '’': "'",
+  '—': '-',
+  '–': '-',
+  '－': '-',
+}
+
+function normalizeAnnotationSearchText(text: string): { value: string; spans: Array<{ start: number; end: number }> } {
+  const characters: string[] = []
+  const spans: Array<{ start: number; end: number }> = []
+
+  for (let index = 0; index < text.length;) {
+    const character = text[index]!
+    if (/\s/u.test(character)) {
+      const start = index
+      while (index < text.length && /\s/u.test(text[index]!)) index += 1
+      if (characters[characters.length - 1] !== ' ') {
+        characters.push(' ')
+        spans.push({ start, end: index })
+      }
+      continue
+    }
+    characters.push(annotationSearchPunctuation[character] ?? character)
+    spans.push({ start: index, end: index + 1 })
+    index += 1
+  }
+
+  return { value: characters.join(''), spans }
+}
+
+function normalizedAnnotationRange(text: string, evidenceText: string): { start: number; end: number } | null {
+  const source = normalizeAnnotationSearchText(text)
+  const evidence = normalizeAnnotationSearchText(evidenceText).value
+  if (!evidence) return null
+
+  const start = source.value.indexOf(evidence)
+  // A relaxed match must be unique. Highlighting the wrong repeated sentence is worse than a clear fallback.
+  if (start < 0 || source.value.indexOf(evidence, start + 1) >= 0) return null
+  const first = source.spans[start]
+  const last = source.spans[start + evidence.length - 1]
+  return first && last ? { start: first.start, end: last.end } : null
+}
+
 function annotationRange(text: string, annotation: ReviewAnnotationDetail): { start: number; end: number } | null {
   if (
     annotation.start_offset !== null
@@ -996,7 +1053,8 @@ function annotationRange(text: string, annotation: ReviewAnnotationDetail): { st
   }
   if (!annotation.evidence_text) return null
   const start = text.indexOf(annotation.evidence_text)
-  return start < 0 ? null : { start, end: start + annotation.evidence_text.length }
+  if (start >= 0) return { start, end: start + annotation.evidence_text.length }
+  return normalizedAnnotationRange(text, annotation.evidence_text)
 }
 
 function buildAnnotatedTextSegments(text: string, annotations: ReviewAnnotationDetail[]): AnnotatedTextSegment[] {
