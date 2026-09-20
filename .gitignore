@@ -56,6 +56,8 @@ test-results/
 backend/.runtime/
 backend/.tmp_ocr_verify/
 backend/storage/
+/storage/
+/uploads/
 /logs/
 /tmp/
 data/
